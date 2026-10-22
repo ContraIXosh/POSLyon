@@ -50,9 +50,11 @@ Cada vez que se completa un módulo o funcionalidad:
 ### 2.1. ¿Qué construimos y por qué en este orden?
 [Explicación conceptual clara del rol de este componente en la arquitectura y su grado de acoplamiento].
 
-### 2.2. Anatomía Técnica: Patrones, Principios SOLID y Lenguaje
-- **Principio SOLID / Patrón Aplicado:** [Ej: SRP, OCP, DIP, Strategy, Snapshot, Signed Ledger, OCC].
-- **Por qué se usan estas funciones / decoradores / tipos:** [Explicación línea por línea o bloque por bloque de las herramientas del lenguaje/framework].
+### 2.2. Anatomía Técnica: Patrones, Principios SOLID, Anti-Patrones y Teoría de Sistemas
+Para cada concepto o archivo implementado, desarrollar obligatoriamente:
+- **Fundamento Teórico Formal:** Nombre técnico exacto en Ciencias de la Computación / Ingeniería en Sistemas (ej: Teoría de Autómatas y Harel Statecharts, Estándares RFC como RFC 4122 o RFC 9110, Type Erasure vs. Metaprogramación/Reflexión, Acoplamiento Aferente/Eferente $C_a / C_e$, Principios ADP/SDP de Robert C. Martin, Álgebra Relacional de Codd).
+- **❌ El Mal Diseño (Enfoque Novato / Anti-Patrón):** Explicar cómo suele programarse erróneamente y por qué falla en producción (explosión combinatoria, pérdida de integridad referencial, condiciones de carrera, corrupción de datos).
+- **✅ El Diseño de Ingeniería (Enfoque Profesional en POSLyon):** Explicar paso a paso cómo lo resuelve nuestro código, por qué se usan determinados decoradores, banderas del compilador o estructuras de datos.
 
 ### 2.3. Bitácora de Decisiones Arquitectónicas (ADR)
 - **Decisión Tomada:** [Qué se eligió].
