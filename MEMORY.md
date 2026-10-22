@@ -7,12 +7,13 @@
 ## 📍 Estado Actual del Proyecto
 
 - **Última actualización:** 2026-10-22
-- **Repositorio Remoto GitHub:** `https://github.com/ContraIXosh/POSLyon` (Rama `main`)
+- **Repositorio Remoto GitHub:** `https://github.com/ContraIXosh/POSLyon` (Rama `main` sincronizada)
 - **Fase Actual:** **Nivel 0 — Núcleo de Dominio Puro (`libs/domain-core`)**
-- **Último Paso Completado:** **Sub-módulo 0.2** — Catálogo completo de 18 Enums Canónicos de Dominio (`libs/domain-core/src/enums/`) cubriendo Core POS, Promociones, Turnos de Caja, Cuentas Corrientes (*Signed Ledger*), Devoluciones, Inventario/Reconciliación, Cuarentena, Transferencias 2PC, Proveedores/Recepción, Sincronización, Auditoría Forense y Planes Comerciales.
+- **Último Paso Completado:** **Sub-módulo 0.3** — Conjunto completo de 28 Interfaces de Contratos Inmutables de Dominio (`libs/domain-core/src/interfaces/`) cubriendo todos los módulos (Venta, Snapshots, Reglas JSONB y Feature Toggles, Packs, Catálogo Global, Existencias por Sucursal, Reconciliación de Huérfanos, Cuarentena, Transferencias 2PC, Signed Ledger de Cuentas Corrientes, Devoluciones y Notas de Crédito, Arqueo Ciego de Caja, Diccionario de Proveedores, Preservación de Margen Sugerido, Auditoría Forense con Snapshots y Sincronización Local-First por Cursores).
 - **Documentos de Trazabilidad Generados:**
-  1. [`docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md`](file:///home/ContraIXosh/Documents/POSLyon/docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md) *(Actualizado con contraste Anti-Patrón Novato vs. Ingeniería Profesional, RFC 4122, Teoría de Autómatas / Harel Statecharts y Type Erasure)*.
-  2. [`docs/trazabilidad/02-enums-dominio-modulos.md`](file:///home/ContraIXosh/Documents/POSLyon/docs/trazabilidad/02-enums-dominio-modulos.md) *(Incluye cátedra completa sobre Signed Ledger, Cierre Ciego vs. Rectificación Forense, Two-Phase Commit Logístico 2PC, Strategy Pattern y Deducción Recursiva de Packs)*.
+  1. [`docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md`](file:///home/ContraIXosh/Documents/POSLyon/docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md) *(Anti-Patrón Novato vs. Ingeniería Profesional, RFC 4122 Nil UUID, Harel Statecharts y Type Erasure)*.
+  2. [`docs/trazabilidad/02-enums-dominio-modulos.md`](file:///home/ContraIXosh/Documents/POSLyon/docs/trazabilidad/02-enums-dominio-modulos.md) *(Signed Ledger, Cierre Ciego vs. Rectificación Forense, Two-Phase Commit 2PC, Strategy Pattern y Packs)*.
+  3. [`docs/trazabilidad/03-interfaces-contratos-dominio.md`](file:///home/ContraIXosh/Documents/POSLyon/docs/trazabilidad/03-interfaces-contratos-dominio.md) *(Zero-Cost Abstractions en interfaces vs clases, Price Snapshotting en VentaDetalle, Invariancia de Esquema N=1 en planes comerciales, Preservación Automática de Margen Bruto y Desacoplamiento Temporal en Devoluciones)*.
 
 ---
 
@@ -21,7 +22,7 @@
 ### 🧱 Nivel 0: Núcleo de Dominio Puro (`libs/domain-core`) — *Cero Acoplamiento*
 - [x] **0.1.** Infraestructura Monorepo + Constantes Canónicas (`UUID_ARTICULO_COMODIN`, `UUID_SYSTEM_BOT`) + Enums de Estados de Venta (`EstadoGeneral`, `EstadoLogistico`, `EstadoFinanciero`). *(Trazabilidad: `01-monorepo-y-nucleo-estados-pos.md`)*
 - [x] **0.2.** Resto de Enums de Dominio (Cuentas Corrientes, Devoluciones, Inventario/Reconciliación, Turnos de Caja, Transferencias 2PC, Proveedores/Recepción y Sincronización/Auditoría/Planes). *(Trazabilidad: `02-enums-dominio-modulos.md`)*
-- [ ] **0.3.** Interfaces de Contratos Inmutables (`IVenta`, `IVentaDetalle`, `IConfiguracionSucursal`, `IProductoGlobal`, `IProductoSucursal`, `ICliente`, `ICuentaCorriente`, `IAuditoria`, `ISyncEngineStrategy`, etc.).
+- [x] **0.3.** Interfaces de Contratos Inmutables (`IVenta`, `IVentaDetalle`, `IConfiguracionSucursal`, `IProductoGlobal`, `IProductoSucursal`, `ICliente`, `ICuentaCorriente`, `IAuditoria`, `ISyncEngineStrategy`, etc.). *(Trazabilidad: `03-interfaces-contratos-dominio.md`)*
 - [ ] **0.4.** DTOs con Validaciones Declarativas (`class-validator` y `class-transformer`) + Pruebas Unitarias de Validación.
 - [ ] **0.5.** Servicios Puros de Dominio (Cálculo de Margen Preservado, Fórmulas de Reembolso Neto Promocional RF-09, Deducción de Stock en Reconciliación RF-13, Guardas de Reloj Monótono S-10) + Suite de Tests Unitarios Nivel 1 (`jest`).
 
@@ -67,4 +68,4 @@
 ---
 
 ## 🎯 Próximo Paso Inmediato
-- **Paso 0.3:** Implementar las **Interfaces de Contratos Inmutables (`libs/domain-core/src/interfaces/`)** que representan la forma exacta en memoria de cada tabla del ERD (incluyendo Snapshots de Precios, JSONB de Configuración, OCC `version`, Cursores de Sincronización y el puerto `ISyncEngineStrategy`), explicar la diferencia entre `interface` y `class` en TypeScript y crear `docs/trazabilidad/03-interfaces-contratos-dominio.md`.
+- **Paso 0.4:** Implementar los **DTOs con Validaciones Declarativas (`libs/domain-core/src/dtos/`)** (`CrearVentaDto`, `PagoItemDto`, `ReconciliarCodigoHuerfanoDto`, `CrearDevolucionDto`, `ItemDevolucionDto`, `RegistrarAbonoDto`, `ConfirmarRecepcionDto`, `SyncPushDto`), explicar el patrón DTO vs Interface, decoradores de `class-validator` y documentar en `docs/trazabilidad/04-dtos-y-validaciones-declarativas.md`.
