@@ -1,0 +1,16 @@
+# Normalización universal de saltos de línea para compatibilidad Fedora Linux <-> Windows
+# Evita que git marque todos los archivos como modificados al cambiar de sistema operativo.
+* text=auto eol=lf
+
+# Archivos específicamente binarios
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.sqlite binary
+*.db binary

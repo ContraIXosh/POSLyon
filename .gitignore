@@ -1,0 +1,38 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Compilados y builds
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Variables de entorno locales (secretos)
+.env
+.env.local
+.env.*.local
+
+# Datos locales de contenedores o bases SQLite de prueba
+postgres_data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Logs y cobertura de tests
+logs/
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/
+
+# Archivos de Sistema Operativo e IDEs (Fedora / Windows)
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo

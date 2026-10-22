@@ -1,0 +1,26 @@
+{
+  "name": "poslyon-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "POSLyon — Sistema de Punto de Venta Local-First Multi-Sucursal (Monorepo SDD)",
+  "workspaces": [
+    "libs/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:domain": "npm run build --workspace=@poslyon/domain-core",
+    "build:backend": "npm run build --workspace=@poslyon/backend-cloud",
+    "build": "npm run build:domain && npm run build:backend",
+    "start:dev": "npm run start:dev --workspace=@poslyon/backend-cloud",
+    "test": "jest",
+    "test:domain": "npm run test --workspace=@poslyon/domain-core",
+    "test:backend": "npm run test --workspace=@poslyon/backend-cloud",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}

@@ -1,0 +1,3179 @@
+# POSLyon — Arquitectura del Sistema, Modelado de Dominio y Diagramas UML
+
+> **Sistema:** POSLyon — Punto de Venta Local-First Multi-Sucursal  
+> **Alcance:** Arquitectura de Software, Diagramas UML Mermaid.js, Protocolos de Sincronización y Transaccionalidad
+
+---
+
+## Capítulo 1: Visión General y Arquitectura del Sistema
+
+# POSLyon — Arquitectura del Sistema
+
+## Sistema Punto de Venta Offline-First con Arquitectura Evolutiva por Planes (SDD & Monorepo)
+
+Bienvenido a la documentación arquitectónica de **POSLyon**. Este proyecto implementa una arquitectura **Offline-First**, **Local-First**, **Modular Monorepo** y **Spec-Driven Development (SDD)** con control de concurrencia optimista (OCC), trazabilidad incondicional y una **Estrategia Comercial Bifronte sin Migración de Esquema (*Zero-Migration Upgrade*)**:
+
+- **📦 Plan Básico (`BASICO_LOCAL` — Monosucursal Autónomo con Cluster LAN Multi-Caja):** Opera **100% dentro de la sucursal física sin requerir servidor en la nube ni conexión a Internet** (costo de infraestructura Cloud \= \$0). Soporta desde 1 PC de mostrador hasta **múltiples PCs de caja (`MAESTRO_LAN` \+ `SECUNDARIO_LAN`)** y múltiples dispositivos móviles (`embalador-mobile`) sincronizando reservas, ventas, cuentas corrientes y catálogo entre sí a través de la red de área local (LAN) mediante `LanClusterSyncStrategy`. Todas las tareas administrativas del Dueño (`es_dueno = true` o permisos PBAC) se ejecutan localmente en `pos-desktop`.  
+- **🚀 Plan Superior (`SUPERIOR_CLOUD` — Multisucursal Distribuido Híbrido):** Se activa mediante una **Licencia Criptográfica Firmada (JWT Offline RS256/Ed25519)** en `CONFIGURACION_SUCURSAL`, desbloqueando los *Feature Flags* multisucursal (`sincronizacion_cloud`, `catalogo_multisucursal`, `transferencias_inter_sucursal`, `clientes_inter_sucursal`) y conectando cada sucursal con `apps/backend-cloud` (NestJS \+ PostgreSQL) mediante `CloudMultiBranchSyncStrategy`. Gracias al **Principio de Invariancia de Esquema ($N=1\rightarrow N\geq 1$)**, el salto del Plan Básico al Plan Superior se realiza mediante un *Bootstrap Catch-Up Push* inicial con **cero alteraciones de tablas (`ALTER TABLE`)**.
+
+---
+
+## 🏗️ Estructura del Monorepo
+
+![][image1]
+
+---
+
+## 📚 Índice de Especificaciones y Fases SDD
+
+### 📁 File-Level Specs por Módulo (Fase 2\)
+
+1. [**Módulo 1: Core POS & Congelamiento de Precios**](http://File-Level%20Specs_%20M%C3%B3dulo%20Core%20POS.md)  
+   - Snapshots inmutables de precio de lista en `VENTA_DETALLE.precio_unitario`.  
+   - Descuentos aditivos en `monto_descuento`. Re-evaluación total al cambiar entre Minorista/Mayorista.  
+2. [**Módulo 2: Cuentas Corrientes, Devoluciones y Notas de Crédito**](http://File-Level%20Specs_%20M%C3%B3dulo%20Cuentas%20Corrientes%20y%20Devoluciones.md)  
+   - Resiliencia offline y resolución de sobregiro post-sync (`EXCESO_LIMITE_CREDITO_POST_SYNC`).  
+   - Cero saldo a favor negativo: forzado a compensación en *Efectivo* si `saldo_deudor < monto_devolucion`.  
+   - Impacto financiero de la devolución vinculado estrictamente al `TURNO_CAJA` actual del operador.  
+3. [**Módulo 3: Inventario y Reconciliación de Códigos Huérfanos**](http://File-Level%20Specs_%20M%C3%B3dulo%20Inventario%20y%20Reconciliaci%C3%B3n%20de%20C%C3%B3digos%20Hu%C3%A9rfanos.md)  
+   - Artículo Comodín (`00000000-0000-0000-0000-000000000000`) para venta rápida sin trabas.  
+   - Permisividad universal de stock negativo (`stock_fisico < 0`) y bloqueo estricto de cobro en carritos en estado `INCOMPLETO` (exige regularización previa en mostrador).  
+   - Fórmula matemática de stock inicial calculado: $\text{stock\_inicial} = \text{stock\_fisico\_actual} + \text{unidades\_vendidas}$.  
+   - Auditoría de discrepancias de precios (`MERMA_LOGICA` vs `SOBRANTE_LOGICO`).  
+4. [**Módulo 4: Proveedores, Diccionario y Recepción de Mercadería**](http://File-Level%20Specs_%20M%C3%B3dulo%20Proveedores,%20Diccionario%20y%20Recepci%C3%B3n%20de%20Mercader%C3%ADa.md)  
+   - Restricción compuesta `UNIQUE(id_proveedor, nombre_en_factura)` para aprendizaje de alias.  
+   - Cálculo automático de precio de venta sugerido preservando el markup histórico de rentabilidad.  
+   - Manejo de discrepancias físicas (Faltantes / Sobrantes).  
+5. [**Módulo 5: Sincronización Local-First e Interceptor de Auditoría**](http://File-Level%20Specs_%20M%C3%B3dulo%20Sincronizaci%C3%B3n%20Local-First%20e%20Interceptor%20de%20Auditor%C3%ADa.md)  
+   - Sincronización por cursores temporales (`last_pulled_at`) con WatermelonDB.  
+   - Control de Concurrencia Optimista (OCC) con código HTTP 409 y merge aditivo prioritario para ventas presenciales.  
+   - WebSockets LAN en sucursal (Cajero $\leftrightarrow$ Embalador) y Cloud Push.  
+   - `AuditInterceptor` global para captura forense (`valor_anterior` y `valor_nuevo`) y Soft Delete universal.
+
+---
+
+### 🤖 Ecosistema de Agentes y Pruebas (Fases 3 y 4\)
+
+* [**Fase 3: Sistema de Agentes, Subagentes y Skills (MCP)**](http://Fase%203%20-%20Sistema%20de%20Agentes,%20Subagentes%20y%20Skills%20%28MCP%29.md)  
+  - Roles especializados: `db-architect`, `backend-nestjs`, `frontend-electron`, `qa-automation`.  
+  - Bitácoras Pedagógicas y Decisiones de Arquitectura (ADR) obligatorias con justificación de trade-offs.  
+* [**Fase 4: Plantillas de Planificación y Checklists de Testing**](http://Fase%204%20-%20Plantillas%20de%20Planificaci%C3%B3n%20y%20Checklists%20de%20Testing%20y%20Ejecuci%C3%B3n.md)  
+  - Plantilla estándar de PR/Commits SDD.  
+  - Pirámide de testing (Unitario, Integración OCC, E2E con simulación de pérdida de red y caos).  
+  - Checklists de control de calidad pre, durante y post implementación.
+
+---
+
+### 📊 Diagramas del Modelo del Dominio
+
+* [**Diagrama de Entidad-Relación (ERD)**](http://Diagrama%20de%20Entidad-Relaci%C3%B3n%20%28ERD%29.md)  
+* [**Documento de Educción de Requisitos de Software (ERS)**](http://Documento%20de%20Educci%C3%B3n%20de%20Requisitos%20de%20Software%20%28ERS%29.md)  
+* *(Diagramas de secuencia de promociones, pagos mixtos, créditos, transferencias, OCC y arqueos de caja disponibles en esta misma carpeta).*
+
+---
+
+## 🗄️ Capítulo 2: Modelo de Datos — Diagrama Entidad-Relación Maestro (ERD)
+
+# Diagrama de Entidad-Relación (ERD) — Modelo Canónico de Datos
+
+```mermaid
+erDiagram
+
+SUCURSAL {
+
+uuid id PK
+
+string nombre
+
+string direccion
+
+boolean en_linea
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+CONFIGURACION_SUCURSAL {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+jsonb reglas_negocio
+
+datetime ultima_modificacion
+
+int version
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+USUARIO {
+
+uuid id PK
+
+string nombre
+
+string email
+
+string password_hash
+
+boolean es_dueno
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+USUARIO_SUCURSAL {
+
+uuid id PK
+
+uuid id_usuario FK
+
+uuid id_sucursal FK
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+PERMISO {
+
+uuid id PK
+
+string codigo
+
+string modulo
+
+string nombre
+
+string descripcion
+
+jsonb dependencias
+
+boolean activo
+
+}
+
+USUARIO_PERMISO {
+
+uuid id PK
+
+uuid id_usuario FK
+
+uuid id_sucursal FK
+
+uuid id_permiso FK
+
+datetime created_at
+
+}
+
+CATEGORIA {
+
+uuid id PK
+
+string nombre
+
+}
+
+PRODUCTO_GLOBAL {
+
+uuid id PK
+
+string nombre
+
+string descripcion
+
+uuid id_categoria FK
+
+string tipo_venta
+
+uuid id_producto_base FK
+
+decimal multiplicador_stock
+
+int version
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+CODIGO_BARRA {
+
+string codigo PK
+
+uuid id_producto FK
+
+string tipo
+
+boolean activo
+
+datetime created_at
+
+}
+
+PRODUCTO_SUCURSAL {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+uuid id_producto FK
+
+decimal precio_costo
+
+decimal precio_minorista
+
+decimal precio_mayorista
+
+decimal precio_minorista_pendiente
+
+decimal precio_mayorista_pendiente
+
+datetime fecha_vigencia_pendiente
+
+decimal stock_fisico
+
+decimal stock_reservado
+
+decimal stock_minimo
+
+int version
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+PROMOCION {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+string nombre
+
+string descripcion
+
+datetime fecha_inicio
+
+datetime fecha_fin
+
+int cantidad_minima
+
+int cantidad_maxima
+
+string tipo_efecto
+
+decimal valor_efecto
+
+int version
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+PROMOCION_PRODUCTO {
+
+uuid id PK
+
+uuid id_promocion FK
+
+uuid id_producto FK
+
+decimal cantidad_requerida
+
+datetime created_at
+
+}
+
+PROVEEDOR {
+
+uuid id PK
+
+string razon_social
+
+string cuit
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+DICCIONARIO_PROVEEDOR {
+
+uuid id PK
+
+uuid id_proveedor FK
+
+uuid id_producto FK
+
+string nombre_en_factura
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+TRANSFERENCIA_STOCK {
+
+uuid id PK
+
+uuid id_sucursal_origen FK
+
+uuid id_sucursal_destino FK
+
+uuid id_usuario_envia FK
+
+uuid id_usuario_recibe FK
+
+string estado
+
+datetime fecha_envio
+
+datetime fecha_recepcion
+
+string motivo_discrepancia
+
+datetime fecha_resolucion_discrepancia
+
+uuid id_usuario_resuelve_discrepancia FK
+
+int version
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+TRANSFERENCIA_DETALLE {
+
+uuid id PK
+
+uuid id_transferencia FK
+
+uuid id_producto FK
+
+decimal cantidad_enviada
+
+decimal cantidad_recibida
+
+string estado_item
+
+datetime created_at
+
+}
+
+CLIENTE {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+string nombre
+
+decimal limite_credito
+
+decimal saldo_deudor
+
+boolean requiere_revision
+
+int version
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+CUENTA_CORRIENTE {
+
+uuid id PK
+
+uuid id_cliente FK
+
+uuid id_venta FK
+
+uuid id_nota_credito FK
+
+uuid id_metodo_pago FK
+
+decimal monto
+
+string tipo_movimiento
+
+datetime fecha
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+VENTA {
+
+uuid id PK
+
+string numero_comprobante
+
+uuid id_sucursal FK
+
+uuid id_turno_caja FK
+
+uuid id_usuario FK
+
+uuid id_cliente FK
+
+decimal total
+
+datetime fecha
+
+string estado_logistico
+
+string estado_financiero
+
+string estado_general
+
+boolean tiene_devolucion_parcial
+
+boolean es_compartido
+
+datetime fecha_expiracion_reserva
+
+int version
+
+datetime created_at
+
+datetime updated_at
+
+datetime deleted_at
+
+}
+
+VENTA_DETALLE {
+
+uuid id PK
+
+uuid id_venta FK
+
+uuid id_producto FK
+
+decimal cantidad
+
+decimal precio_unitario
+
+uuid id_promocion_aplicada FK
+
+decimal monto_descuento
+
+string tipo_precio
+
+string codigo_comodin
+
+string nombre_comodin
+
+datetime created_at
+
+}
+
+PAGO_VENTA {
+
+uuid id PK
+
+uuid id_venta FK
+
+uuid id_metodo_pago FK
+
+decimal monto
+
+datetime created_at
+
+}
+
+METODO_PAGO {
+
+uuid id PK
+
+string nombre
+
+boolean afecta_caja_fisica
+
+boolean activo
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+TURNO_CAJA {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+uuid id_usuario FK
+
+datetime fecha_apertura
+
+datetime fecha_cierre
+
+decimal monto_inicial_efectivo
+
+decimal efectivo_declarado
+
+decimal diferencia_caja
+
+string estado
+
+decimal efectivo_rectificado
+
+datetime fecha_rectificacion
+
+uuid id_usuario_rectifica FK
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+MOVIMIENTO_CAJA {
+
+uuid id PK
+
+uuid id_turno_caja FK
+
+uuid id_metodo_pago FK
+
+string tipo_movimiento
+
+decimal monto
+
+string concepto
+
+boolean afecta_caja_fisica
+
+datetime fecha
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+AUDITORIA {
+
+uuid id PK
+
+uuid id_usuario FK
+
+string tabla_afectada
+
+uuid id_registro_afectado
+
+string accion
+
+jsonb valor_anterior
+
+jsonb valor_nuevo
+
+datetime fecha
+
+string motivo
+
+}
+
+%% --- DEVOLUCIONES (Notas de Crédito) ---
+
+NOTA_CREDITO {
+
+uuid id PK
+
+string numero_comprobante
+
+uuid id_venta FK
+
+uuid id_cliente FK
+
+uuid id_usuario FK
+
+uuid id_turno_caja FK
+
+decimal monto_total
+
+string tipo_devolucion
+
+string motivo
+
+datetime fecha
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+NOTA_CREDITO_DETALLE {
+
+uuid id PK
+
+uuid id_nota_credito FK
+
+uuid id_producto FK
+
+decimal cantidad
+
+decimal precio_unitario_momento
+
+decimal monto_descuento
+
+decimal subtotal
+
+boolean devuelto_a_inventario
+
+datetime created_at
+
+}
+
+%% --- RECEPCIÓN DE MERCADERÍA (WIP / Offline Proof) ---
+
+RECEPCION_MERCADERIA {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+uuid id_proveedor FK
+
+uuid id_usuario FK
+
+string estado
+
+string numero_remito
+
+decimal total_bultos
+
+datetime fecha_inicio
+
+datetime fecha_completado
+
+int version
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+RECEPCION_MERCADERIA_DETALLE {
+
+uuid id PK
+
+uuid id_recepcion_mercaderia FK
+
+uuid id_producto FK
+
+decimal cantidad_declarada
+
+decimal cantidad_recibida
+
+decimal costo_unitario
+
+decimal costo_anterior
+
+decimal precio_venta_sugerido
+
+boolean aplicar_precio_sugerido
+
+string estado_discrepancia
+
+datetime created_at
+
+}
+
+%% --- INVENTARIO Y RECONCILIACIÓN ---
+
+ALERTA_CUARENTENA {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+uuid id_producto FK
+
+uuid id_venta FK
+
+decimal cantidad_faltante
+
+string estado
+
+uuid id_usuario_reporta FK
+
+uuid id_usuario_resuelve FK
+
+datetime fecha_reporte
+
+datetime fecha_resolucion
+
+datetime created_at
+
+datetime updated_at
+
+}
+
+%% --- SINCRONIZACIÓN LOCAL-FIRST ---
+
+SYNC_CURSOR {
+
+uuid id PK
+
+uuid id_sucursal FK
+
+datetime last_pulled_at
+
+datetime last_pushed_at
+
+int schema_version
+
+datetime updated_at
+
+}
+
+%% --- Relaciones originales ---
+
+SUCURSAL ||--o{ USUARIO_SUCURSAL : "tiene"
+
+USUARIO ||--o{ USUARIO_SUCURSAL : "trabaja en"
+
+SUCURSAL ||--o{ CLIENTE : "tiene"
+
+CATEGORIA ||--o{ PRODUCTO_GLOBAL : "clasifica"
+
+PRODUCTO_GLOBAL ||--o{ PRODUCTO_GLOBAL : "es pack de (recursiva)"
+
+PRODUCTO_GLOBAL ||--o{ CODIGO_BARRA : "identifica"
+
+PRODUCTO_GLOBAL ||--o{ PRODUCTO_SUCURSAL : "instancia local"
+
+PROMOCION ||--|{ PROMOCION_PRODUCTO : "aplica a"
+
+PRODUCTO_GLOBAL ||--o{ PROMOCION_PRODUCTO : "incluido en"
+
+SUCURSAL |o--o{ PROMOCION : "aplica en (NULL = global)"
+
+SUCURSAL ||--o{ PRODUCTO_SUCURSAL : "almacena"
+
+PROVEEDOR ||--o{ DICCIONARIO_PROVEEDOR : "utiliza"
+
+PRODUCTO_GLOBAL ||--o{ DICCIONARIO_PROVEEDOR : "mapea a"
+
+%% --- Transferencias desdobladas (Resolución O-06 y O-08) ---
+
+SUCURSAL ||--o{ TRANSFERENCIA_STOCK : "origen de despacho"
+
+SUCURSAL ||--o{ TRANSFERENCIA_STOCK : "destino de recepción"
+
+USUARIO ||--o{ TRANSFERENCIA_STOCK : "despacha"
+
+USUARIO |o--o{ TRANSFERENCIA_STOCK : "recibe"
+
+USUARIO |o--o{ TRANSFERENCIA_STOCK : "resuelve discrepancia de"
+
+TRANSFERENCIA_STOCK ||--|{ TRANSFERENCIA_DETALLE : "contiene"
+
+PRODUCTO_GLOBAL ||--o{ TRANSFERENCIA_DETALLE : "involucra"
+
+CLIENTE |o--o{ VENTA : "realiza"
+
+CLIENTE ||--o{ CUENTA_CORRIENTE : "posee historial en"
+
+VENTA ||--o{ CUENTA_CORRIENTE : "genera cargo en"
+
+NOTA_CREDITO |o--o{ CUENTA_CORRIENTE : "restituye saldo en"
+
+VENTA ||--|{ VENTA_DETALLE : "compuesta por"
+
+VENTA ||--o{ PAGO_VENTA : "se compone de"
+
+PRODUCTO_GLOBAL ||--o{ VENTA_DETALLE : "vendido en"
+
+PROMOCION |o--o{ VENTA_DETALLE : "generó descuento en"
+
+SUCURSAL ||--o{ VENTA : "registra"
+
+USUARIO ||--o{ VENTA : "cobra"
+
+METODO_PAGO ||--o{ PAGO_VENTA : "clasifica"
+
+METODO_PAGO ||--o{ MOVIMIENTO_CAJA : "clasifica medio de"
+
+METODO_PAGO |o--o{ CUENTA_CORRIENTE : "medio de abono en"
+
+SUCURSAL ||--o{ TURNO_CAJA : "aloja"
+
+USUARIO ||--o{ TURNO_CAJA : "abre/cierra"
+
+TURNO_CAJA ||--o{ VENTA : "agrupa"
+
+TURNO_CAJA ||--o{ MOVIMIENTO_CAJA : "registra eventos de"
+
+SUCURSAL ||--|| CONFIGURACION_SUCURSAL : "posee reglas de"
+
+%% --- [NUEVO] Relaciones de permisos y modelo PBAC ---
+
+USUARIO ||--o{ USUARIO_PERMISO : "posee"
+
+SUCURSAL ||--o{ USUARIO_PERMISO : "delimita ámbito de"
+
+PERMISO ||--o{ USUARIO_PERMISO : "otorgado en"
+
+%% --- Relaciones de Notas de Crédito ---
+
+VENTA ||--o{ NOTA_CREDITO : "sufre devoluciones en"
+
+CLIENTE |o--o{ NOTA_CREDITO : "recibe compensación"
+
+USUARIO ||--o{ NOTA_CREDITO : "emite"
+
+TURNO_CAJA ||--o{ NOTA_CREDITO : "extrae dinero de"
+
+NOTA_CREDITO ||--|{ NOTA_CREDITO_DETALLE : "detalla artículos"
+
+PRODUCTO_GLOBAL ||--o{ NOTA_CREDITO_DETALLE : "es devuelto en"
+
+%% --- Relaciones de Recepción de Proveedores ---
+
+SUCURSAL ||--o{ RECEPCION_MERCADERIA : "ingresa stock a"
+
+PROVEEDOR ||--o{ RECEPCION_MERCADERIA : "abastece"
+
+USUARIO ||--o{ RECEPCION_MERCADERIA : "procesa"
+
+RECEPCION_MERCADERIA ||--|{ RECEPCION_MERCADERIA_DETALLE : "contiene bultos"
+
+PRODUCTO_GLOBAL ||--o{ RECEPCION_MERCADERIA_DETALLE : "es ingresado por"
+
+%% --- Relaciones de Auditoría, Cuarentena y Sincronización ---
+
+USUARIO ||--o{ AUDITORIA : "registra mutación en"
+
+SUCURSAL ||--o{ ALERTA_CUARENTENA : "registra faltantes en"
+
+PRODUCTO_GLOBAL ||--o{ ALERTA_CUARENTENA : "sufre faltante en"
+
+VENTA ||--o{ ALERTA_CUARENTENA : "asociada a preparación de"
+
+USUARIO ||--o{ ALERTA_CUARENTENA : "reporta/resuelve"
+
+SUCURSAL ||--o{ SYNC_CURSOR : "mantiene progreso en"
+```
+
+&nbsp;
+
+---
+
+## 👥 Capítulo 3: Diagrama de Casos de Uso (Interacciones por Capacidad)
+
+```mermaid
+flowchart LR
+
+%% Actores
+Admin((Administrador))
+Cajero((Cajero<br/>Sucursal))
+Embalador((Embalador<br/>Móvil))
+
+%% Panel de administración
+subgraph PanelAdmin["Panel de administración"]
+    UC1(Crear/Editar Sucursales)
+    UC2(Rotar Usuarios entre Sucursales)
+    UC3(Ver Reportes Globales)
+    UC4(Modificar Precios Masivos)
+    UC24(Crear/Editar Cajeros)
+    UC19(Reconciliar Códigos Huérfanos)
+    UC25(Configurar comportamiento de sucursal)
+    UC11(Transferir Stock a otra Sucursal)
+end
+
+%% Sistema Central
+subgraph SistemaPOS["Sistema POS Multi-Sucursal"]
+    UC5(Abrir Múltiples Carritos)
+    UC7(Cobrar Efectivo/Transferencia/Mixto)
+    UC8(Gestionar Fiados y Abonos)
+    UC9(Controlar Precarga Proveedor)
+    UC10(Sugerir/Aplicar Cambio de Precio)
+    UC12(Modificar Stock Manualmente con Motivo)
+    UC13(Visualizar Carrito Asignado)
+
+    UC14(Marcar Producto Completo/Incompleto)
+    UC26(Confirmar orden de despacho de stock desde otra sucursal)
+    UC27(Confirmar recepción de stock transferida de otra sucursal)
+end
+
+subgraph CatalogoPrecios["Módulo de Catálogo y Precios"]
+    UC16(Crear Lotes/Packs vinculados a Base)
+    UC17(Programar Promociones y Combos)
+end
+
+%% Sistema Local (Caja)
+subgraph OperacionCarrito["Operación de carrito"]
+    UC20(Escanear Código de Barras)
+    UC21(Ingresar Peso Manual / Balanza)
+    UC22(Aplicar Descuento Promocional Automáticamente)
+    UC23(Descontar Stock Multiplicado)
+    UC18(Vender Artículo No Registrado / Comodín)
+    UC6(Toggle Precio Mayorista/Minorista)
+end
+
+%% Relaciones Admin
+Admin --> UC1
+Admin --> UC2
+Admin --> UC3
+Admin --> UC4
+Admin --> UC11
+Admin --> UC16
+Admin --> UC17
+Admin --> UC19
+Admin --> UC24
+Admin --> UC25
+
+%% Relaciones Cajero
+Cajero --> UC5
+Cajero --> UC6
+Cajero --> UC7
+Cajero --> UC8
+Cajero --> UC9
+Cajero --> UC10
+Cajero --> UC12
+Cajero --> UC20
+Cajero --> UC26
+Cajero --> UC27
+
+%% Relaciones Embalador
+Embalador --> UC13
+Embalador --> UC14
+
+%% Relaciones compartidas o cruces
+UC14 -. "WebSockets Actualiza" .-> UC5
+UC9 -. "Genera alerta de" .-> UC10
+
+%% Flujos de escaneo de productos
+UC20 -. "Si no existe" .-> UC18
+UC20 -. "Si es Granel" .-> UC21
+UC20 -. "Si cumple condición" .-> UC22
+UC20 -. "Si es Pack" .-> UC23
+```
+
+&nbsp;
+
+---
+
+## 🔄 Capítulo 4: Máquinas de Estados del Dominio
+
+### 4.1 Máquina de Estados Ortogonal de Ventas
+
+# Diagrama de Máquina de Estados de Venta (Dimensiones Ortogonales)
+
+## 1\. Propósito Arquitectónico
+
+Para evitar una explosión combinatoria de estados interdependientes y eliminar inconsistencias entre el cobro, la logística y la anulación, la entidad `VENTA` implementa el patrón de **Máquinas de Estado Ortogonales**, segmentando su ciclo de vida en tres columnas independientes y concurrentes en la base de datos:
+
+1. **`estado_general`:** Refleja la validez transaccional y persistencia base de la venta (`BORRADOR`, `CONFIRMADA`, `CANCELADA`, `DESCARTADO`).  
+   - `BORRADOR`: Carrito en preparación o edición en mostrador. Reside únicamente en SQLite local.  
+   - `DESCARTADO`: Carrito en borrador abandonado o expirado por Garbage Collection. Libera `stock_reservado`; nunca tocó `stock_fisico` ni dinero.  
+   - `CONFIRMADA`: Venta cerrada legal y operativamente. Fija `id_turno_caja`, descuenta `stock_fisico` y viaja vía Push Delta a PostgreSQL en la Nube.  
+   - `CANCELADA`: **Anulación formal de una venta previamente `CONFIRMADA`**. Reingresa el 100% de los productos al `stock_fisico`, evalúa reintegro monetario y sincroniza la anulación a la Nube.  
+2. **`estado_logistico`:** Refleja el proceso operativo de preparación, control y entrega física (`A_PREPARAR`, `PREPARANDO`, `CONTROLANDO`, `INCOMPLETO`, `LISTO_PARA_COBRAR`, `ENTREGADO`).  
+3. **`estado_financiero`:** Refleja la situación contable histórica del cobro (`PENDIENTE`, `PAGADO`, `FIADO`, `PARCIAL`).  
+   - **Momento de Impacto en Caja:** La confirmación de la venta **no genera movimiento de caja automático**. La caja se impacta **únicamente cuando el cajero manualmente asienta el pago** pasando la venta a `PAGADO` o `PARCIAL`.  
+   - **Asignación Automática de `FIADO`:** Si la venta se cierra a crédito sobre un cliente (`id_cliente != null`), el sistema asigna automáticamente `estado_financiero = 'FIADO'` (asentando el cargo en `CUENTA_CORRIENTE`), sin impacto en caja física.  
+   - **Guarda de Devolución/Cancelación en `PENDIENTE`:** Si una venta está en `PENDIENTE`, el sistema advierte mediante un modal de confirmación que no hubo dinero ingresado en su momento; al confirmar la anulación o devolución, se reingresa el stock físico pero **jamás se extrae dinero de caja**.
+
+---
+
+## 2\. Diagrama de Estados Ortogonales (Mermaid.js)
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    state Venta_Activa {
+        state "Dimensión General (estado_general)" as DimGeneral {
+            [*] --> BORRADOR: Carrito creado localmente (Soft Allocation)
+            BORRADOR --> CONFIRMADA: Venta cerrada en mostrador (Fija id_turno_caja, descuenta stock_fisico, viaja a Cloud)
+            BORRADOR --> DESCARTADO: Descarte manual de borrador o Timeout GC (Solo libera stock_reservado)
+            CONFIRMADA --> CANCELADA: Anulación total de venta confirmada (Reingresa 100% a stock_fisico, sincroniza a Cloud)
+            CONFIRMADA --> CONFIRMADA: Devolución Parcial (Emite NC, reingresa ítems devueltos a stock_fisico, Venta inmutable)
+            DESCARTADO --> [*]
+            CANCELADA --> [*]
+        }
+
+        --
+
+        state "Dimensión Logística (estado_logistico)" as DimLogistica {
+            [*] --> A_PREPARAR: Pedido en mostrador
+            A_PREPARAR --> PREPARANDO: Clic "Preparar" (Recorrido guiado en móvil)
+            PREPARANDO --> CONTROLANDO: 100% OK + Clic "Controlar"
+            PREPARANDO --> LISTO_PARA_COBRAR: 100% OK + Clic "Finalizar"
+            CONTROLANDO --> LISTO_PARA_COBRAR: Control 100% OK + Clic "Finalizar Control"
+
+            %% Detección de Faltantes y Bloqueo (C-11)
+            PREPARANDO --> INCOMPLETO: Reporta faltante de stock
+            CONTROLANDO --> INCOMPLETO: Reporta faltante de stock
+            INCOMPLETO --> A_PREPARAR: Ajusta cantidad al stock real o elimina ítem
+
+            %% Atajo para ventas rápidas de mostrador
+            A_PREPARAR --> LISTO_PARA_COBRAR: Venta rápida mostrador
+            PREPARANDO --> LISTO_PARA_COBRAR: Venta rápida en curso
+            CONTROLANDO --> LISTO_PARA_COBRAR: Venta rápida en curso
+
+            LISTO_PARA_COBRAR --> ENTREGADO: Mercadería entregada físicamente al cliente
+        }
+
+        --
+
+        state "Dimensión Financiera (estado_financiero)" as DimFinanciera {
+            [*] --> PENDIENTE: Mientras estado_general = 'BORRADOR' o al confirmar sin cobro registrado
+            PENDIENTE --> FIADO: Confirmación a Crédito (Asignación AUTOMÁTICA si es venta fiada a cliente)
+            PENDIENTE --> PAGADO: Cajero asienta cobro total manual (Efectivo/Digital -> Ingresa dinero a caja)
+            PENDIENTE --> PARCIAL: Cajero asienta cobro parcial manual (Dinero a caja + delta a Cuenta Corriente)
+            PARCIAL --> PAGADO: Cliente cancela el saldo adeudado restante
+
+            note right of PENDIENTE
+                REGLA DE DEVOLUCIÓN / CANCELACIÓN:
+                - Si estado_financiero es PAGADO, FIADO o PARCIAL:
+                  Se reintegra dinero o reduce deuda en CC.
+                - Si estado_financiero es PENDIENTE:
+                  Modal de confirmación obligatorio en UI.
+                  Reingresa stock_fisico pero NO devuelve dinero de caja.
+            end note
+        }
+    }
+
+    [*] --> Venta_Activa
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Estados Ortogonales y Transiciones Válidas
+
+| Dimensión | Estados Válidos | Momento de Transición | Regla de Negocio / Efecto Secundario |
+| :---- | :---- | :---- | :---- |
+| **`estado_general`** | `BORRADOR` | Creación de carrito en mostrador o móvil | Mercadería en `stock_reservado`. Reside únicamente en SQLite local. |
+|  | `DESCARTADO` | Descarte manual de borrador o timeout de GC | Libera `stock_reservado`. No altera `stock_fisico` ni finanzas. Permanece 100% local. |
+|  | `CONFIRMADA` | Cierre formal de la venta | Atómico en SQLite, fija `id_turno_caja`, descuenta `stock_fisico` y viaja vía Push Delta a PostgreSQL. |
+|  | `CANCELADA` | Anulación formal de venta confirmada | **Solo transiciona desde `CONFIRMADA`**. Reingresa el 100% de productos a `stock_fisico`, evalúa dinero según `estado_financiero` y sincroniza a Cloud. |
+| **`estado_logistico`** | `A_PREPARAR` | Inicio de carga de artículos | Carrito editable en mostrador. |
+|  | `PREPARANDO` | Operador abre pedido en celular | UI guiada con *highlight* sobre el producto activo, opacando el resto. |
+|  | `CONTROLANDO` | Segunda revisión por otro operador | Verificación cruzada ítem por ítem antes del despacho. |
+|  | `INCOMPLETO` | Se detecta stock físico menor al pedido | **Bloqueo estricto de cobro (C-11)**. Requiere rectificar el carrito en mostrador. |
+|  | `LISTO_PARA_COBRAR` | Ítems 100% conformes (OK) | Pedido cerrado en bolsa, esperando al cajero para el pago. |
+|  | `ENTREGADO` | Entrega de artículos al cliente | Despacho físico de mercadería. |
+| **`estado_financiero`** | `PENDIENTE` | Al abrir borrador o al confirmar sin cobro inmediato | **No genera movimiento de caja**. Dinero aún no recibido. |
+|  | `FIADO` | Al confirmar venta a cuenta corriente | **Asignación automática**. Asienta débito en `CUENTA_CORRIENTE`. No mueve caja física. |
+|  | `PAGADO` | Al asentar cobro total manual en caja | Cajero registra el cobro. Inserta en `PAGO_VENTA` e impacta efectivo en `TURNO_CAJA`. |
+|  | `PARCIAL` | Al asentar cobro parcial manual en caja | Inserta pago en `PAGO_VENTA` y delta residual a deuda en `CUENTA_CORRIENTE`. |
+
+&nbsp;
+
+---
+
+## 4\. Protocolo de Devolución y Cancelación según `estado_financiero`
+
+Al anular totalmente una venta (`CONFIRMADA -> CANCELADA`) o al emitir una Nota de Crédito por devolución parcial de productos:
+
+```ts
+function evaluarImpactoMonetarioDevolucion(venta: IVenta, montoDevolucion: number): AccionFinancieraDevolucion {
+  switch (venta.estado_financiero) {
+    case EstadoFinanciero.PAGADO:
+      // El dinero ingresó físicamente o digitalmente en su momento
+      return { devolverDineroCaja: true, montoCaja: montoDevolucion, ajustarCuentaCorriente: 0, requiereConfirmacionPendiente: false };
+
+    case EstadoFinanciero.FIADO:
+      // El cliente no entregó efectivo; se amortiza su saldo deudor en cuenta corriente
+      return { devolverDineroCaja: false, montoCaja: 0, ajustarCuentaCorriente: montoDevolucion, requiereConfirmacionPendiente: false };
+
+    case EstadoFinanciero.PARCIAL:
+      // Se evalúa cuánto pagó en efectivo vs cuánto quedó adeudado
+      return { devolverDineroCaja: true, montoCaja: montoDevolucion, ajustarCuentaCorriente: 0, requiereConfirmacionPendiente: false };
+
+    case EstadoFinanciero.PENDIENTE:
+      // El dinero NUNCA ingresó a caja. No se debe reintegrar efectivo para no descuadrar el arqueo.
+      return {
+        devolverDineroCaja: false,
+        montoCaja: 0,
+        ajustarCuentaCorriente: 0,
+        requiereConfirmacionPendiente: true, // Dispara modal de confirmación en UI
+        mensajeAlerta: 'Atención: Esta venta se encuentra en estado financiero PENDIENTE. El dinero no ingresó a caja en su momento. Los productos reingresarán al stock físico pero NO se registrará egreso de dinero en caja.'
+      };
+  }
+}
+```
+
+&nbsp;
+
+### 4.2 Máquina de Estados del Ciclo de Vida del Carrito
+
+# Diagrama de Máquina de Estados: Ciclo de Vida del Carrito y Preparación
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama documenta todos los estados posibles por los que transiciona un carrito/pedido de venta desde que se escanea el primer producto en mostrador hasta su cobro definitivo y entrega física.
+
+Garantiza:
+
+1. **Flujo Guiado de Preparación y Control (Modo Focus / Highlight):** Para evitar distracciones o errores ante interrupciones, la UI resalta visualmente el producto activo y opaca el resto mientras el preparador o controlador valida ítem por ítem con el botón "OK".  
+2. **Doble Instancia Opcional (Preparación \+ Control):** Soporta tanto la preparación directa de pocos artículos como la revisión en dos etapas (preparador y posterior controlador en distintos dispositivos móviles vía LAN WebSocket).  
+3. **Bloqueo Incondicional en `INCOMPLETO` (Resolución C-11):** Si se detecta un faltante físico, el carrito pasa a `INCOMPLETO` y **deshabilita estrictamente el botón de cobro / finalización**. Es obligatorio regularizar el carrito en mostrador (ajustando la cantidad o eliminando el ítem) antes de poder cobrar, impidiendo sobrecobros al cliente o ventas fantasmas.  
+4. **Ventas Rápidas de Mostrador (*Fast-Path Checkout*):** Si la compra es pequeña o el cajero atiende de inmediato sin requerir embalador móvil, puede presionar "Cobrar" directamente desde `A_PREPARAR` o durante el proceso, sin obligatoriedad de pasar por cada fase previa.  
+5. **Garbage Collection con Ventana Deslizante (Resoluciones C-13 y C-14):** La reserva de stock (`stock_reservado`) expira universalmente para cualquier pedido en `estado_general = 'BORRADOR'` cuyo tiempo de inactividad supere `ttl_carrito_minutos` (obtenido de `CONFIGURACION_SUCURSAL.reglas_negocio`). Cada mutación activa en el pedido renueva la fecha de expiración, liberando el inventario automáticamente ante abandono.
+
+---
+
+## 2\. Diagrama de Estados (Mermaid.js)
+
+```mermaid
+stateDiagram-v2
+    direction TB
+
+    [*] --> A_Preparar: Cajero inicia venta / Crea VENTA (estado_general = 'BORRADOR', estado_logistico = 'A_PREPARAR')
+
+    state A_Preparar {
+        [*] --> Cargando_Items
+        Cargando_Items --> Cargando_Items: Escaneo / Modificación de ítem (+Stock Reservado / Snapshots de precio)
+    }
+
+    %% Transiciones desde A_Preparar
+    A_Preparar --> Preparando: Clic "Preparar" (Operador abre pedido en celular vía WebSocket)
+    A_Preparar --> Listo_Para_Cobrar: Venta Rápida (Cajero omite preparación guiada en mostrador)
+    A_Preparar --> Descartado: Cajero descarta carrito borrador / Timeout GC
+
+    state Preparando {
+        [*] --> Focus_Item_Activo
+        Focus_Item_Activo --> Focus_Item_Activo: Clic "OK" (Cantidad completa hallada -> Highlight salta al siguiente ítem)
+    }
+
+    %% Detección de Faltante en Preparación
+    Preparando --> Incompleto: Clic "Incompleto" en algún ítem (Se ingresa cant. física hallada opcional)
+
+    %% Finalización de Preparación
+    Preparando --> Controlando: Todos los ítems "OK" + Clic "Controlar" (Segunda revisión por otro celular/operador)
+    Preparando --> Listo_Para_Cobrar: Todos los ítems "OK" + Clic "Finalizar" (Omite control por ser pocos ítems)
+    Preparando --> Listo_Para_Cobrar: Venta Rápida (Cajero decide cobrar inmediatamente)
+
+    state Controlando {
+        [*] --> Focus_Control_Item
+        Focus_Control_Item --> Focus_Control_Item: Clic "OK" en verificación guiada de cada artículo
+    }
+
+    %% Detección de Faltante en Control
+    Controlando --> Incompleto: Clic "Incompleto" durante la segunda revisión
+    Controlando --> Listo_Para_Cobrar: Todos los ítems verificados "OK" + Clic "Finalizar Control"
+    Controlando --> Listo_Para_Cobrar: Venta Rápida (Cobro directo de urgencia)
+
+    %% Estado de Bloqueo Estricto (C-11)
+    state Incompleto {
+        [*] --> Alerta_Discrepancia_Activa
+        note right of Incompleto
+            BLOQUEO ESTRICTO DE COBRO:
+            El botón de cobro / finalizar
+            permanece DESHABILITADO.
+            No se permite cobrar en este estado.
+        end note
+    }
+
+    Incompleto --> A_Preparar: Regularizar carrito en mostrador (Ajusta cantidad física o borra ítem)
+    Incompleto --> Descartado: Cliente desiste de la compra ante el faltante
+
+    %% Expiración Universal por Garbage Collection (C-13 / C-14)
+    Preparando --> Descartado: Timeout GC (Abandono de preparación móvil)
+    Controlando --> Descartado: Timeout GC (Abandono de control de calidad)
+    Incompleto --> Descartado: Timeout GC (Sin regularizar tras ventana TTL)
+    Listo_Para_Cobrar --> Descartado: Timeout GC (Cliente no se presenta a pagar)
+
+    %% Transición a Cobro y Entrega
+    Listo_Para_Cobrar --> Entregado: Cobro procesado exitosamente (estado_general = 'CONFIRMADA', estado_logistico = 'ENTREGADO')
+    Listo_Para_Cobrar --> A_Preparar: Cliente solicita agregar más artículos antes de pagar
+
+    %% Efectos secundarios (Side Effects)
+    Entregado --> [*]: Side Effects: (-Stock Físico), (-Stock Reservado), Dispara Push Delta a Nube
+    Descartado --> [*]: Side Effects: (-Stock Reservado), Stock Físico intacto, sin dinero en caja (100% Local)
+```
+
+&nbsp;
+
+---
+
+## 3\. Especificación Detallada de Cada Estado
+
+### 1\. `A_PREPARAR` (Carga y Edición en Mostrador)
+
+- **Definición:** Estado inicial del carrito en la terminal de mostrador mientras se escanean los productos o se cargan artículos pesables.  
+- **Efectos en Stock:** Cada ítem agregado aplica *Soft Allocation* incrementando `PRODUCTO_SUCURSAL.stock_reservado`.  
+- **Salidas Válidas:**  
+  - `PREPARANDO`: Si el pedido se deriva a un embalador o preparador móvil con celular.  
+  - `LISTO_PARA_COBRAR`: Atajo de venta rápida para clientes en mostrador.  
+  - `DESCARTADO`: Si el cliente se retira o expira el temporizador de reserva (*Garbage Collection*). Libera `stock_reservado` sin tocar `stock_fisico`.
+
+### 2\. `PREPARANDO` (Recorrido Guiado con Focus / Highlight)
+
+- **Definición:** El preparador abre el pedido en su celular o terminal portátil. La interfaz aplica una máscara visual (*highlight* sobre el primer ítem, opacando el resto de la pantalla) para orientar el recorrido físico en góndola.  
+- **Mecánica:**  
+  - Si el operador encuentra la cantidad total requerida, presiona **"OK"**. La UI marca el ítem como conforme y traslada automáticamente el *focus* al siguiente producto.  
+  - Si encuentra mercadería insuficiente o faltante, presiona **"Incompleto"**.  
+- **Salidas Válidas:**  
+  - `CONTROLANDO`: Cuando todos los ítems tienen "OK" y se solicita un segundo control cruzado.  
+  - `LISTO_PARA_COBRAR`: Cuando todos los ítems tienen "OK" y se finaliza la preparación directamente (o por atajo de venta rápida).  
+  - `INCOMPLETO`: Al presionar "Incompleto" en cualquier artículo.
+
+### 3\. `CONTROLANDO` (Segunda Revisión Guiada Opcional)
+
+- **Definición:** Instancia de verificación independiente donde el mismo operador o un compañero revisa físicamente lo embalado antes de entregarlo a la caja.  
+- **Mecánica:** Idéntica a la preparación guiada con *highlight* producto por producto.  
+- **Salidas Válidas:**  
+  - `LISTO_PARA_COBRAR`: Al finalizar el control con 100% de ítems OK.  
+  - `INCOMPLETO`: Si el controlador detecta que un producto falta o está dañado.
+
+### 4\. `INCOMPLETO` (Bloqueo Estricto por Faltante Físico \- Regla C-11)
+
+- **Definición:** El pedido presenta una discrepancia entre lo demandado y la existencia real en salón.  
+- **Invariante de Seguridad:** **El sistema prohíbe terminantemente cobrar o emitir ticket en este estado.** El botón "Cobrar" permanece deshabilitado tanto en el celular como en la caja de mostrador.  
+- **Resolución:** El cajero debe modificar el carrito en mostrador:  
+  - Si el cliente acepta llevar la cantidad encontrada (ej. 4 de 5), se actualiza el renglón a 4 unidades.  
+  - Si no desea el ítem, se elimina del pedido.  
+  - Al guardar la rectificación, el carrito regresa a `A_PREPARAR`, recalculando el total y liberando el bloqueo de cobro.
+
+### 5\. `LISTO_PARA_COBRAR` (Embalaje Concluido)
+
+- **Definición:** Toda la mercadería requerida está en bolsa / mostrador debidamente verificada.  
+- **Salidas Válidas:**  
+  - `ENTREGADO`: Al cobrar y confirmarse la venta en caja (`estado_general = 'CONFIRMADA'`).  
+  - `A_PREPARAR`: Si el cliente en mostrador decide agregar productos de último momento.
+
+### 6\. `ENTREGADO` (Cierre Operativo y Contable)
+
+- **Definición:** Venta consumada, cobrada bajo el turno activo de caja (`TURNO_CAJA.id`) y entregada al cliente.  
+- **Efectos Secundarios:**  
+  - Decremento definitivo de `stock_fisico` y liberación de `stock_reservado`.  
+  - Inserción de métodos de pago en `PAGO_VENTA`.  
+  - Encolamiento para sincronización asíncrona hacia la nube (Push Delta).
+
+### 4.3 Máquina de Estados de Transferencia de Stock
+
+# Diagrama de Máquina de Estados: Ciclo de Vida de Transferencia de Stock
+
+Este diagrama modela el ciclo de vida riguroso de una transferencia física de stock entre sucursales (`TRANSFERENCIA_STOCK`), formalizando las transiciones de estado, condiciones de guarda y efectos colaterales (*Side Effects*) en cumplimiento estricto de **ERS RF-16**, **RNF-03**, y las resoluciones de arquitectura **C-24** (Handshake Dual Online) y **O-08** (Soporte Decimal y Cierre de Discrepancias).
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDIENTE_DESPACHO: Handshake Dual exitoso (Origen y Destino ONLINE en Nube)
+
+    PENDIENTE_DESPACHO --> CANCELADA: Administrador anula orden antes de salida física
+    note right of CANCELADA
+        Side Effects:
+        - No modifica existencias en ninguna sucursal
+        - Se inmutabiliza la orden
+        - Registro forense en AUDITORIA
+    end note
+
+    PENDIENTE_DESPACHO --> EN_TRANSITO: Operario de Origen confirma despacho físico de bultos
+    note right of EN_TRANSITO
+        Guardas:
+        - id_usuario_envia autenticado
+        - Bultos y precinto validados
+        Side Effects:
+        - Descuento atómico en origen:
+          stock_fisico = stock_fisico - cantidad_enviada (decimal)
+        - Asienta fecha_envio = NOW()
+        - Emite evento WebSocket a destino
+    end note
+
+    EN_TRANSITO --> COMPLETADA: Operario de Destino recibe físicamente conforme (cantidad_recibida == cantidad_enviada)
+    note right of COMPLETADA
+        Guardas:
+        - id_usuario_recibe autenticado
+        - Conteo físico idéntico a remito
+        Side Effects:
+        - Incremento atómico en destino:
+          stock_fisico = stock_fisico + cantidad_recibida (decimal)
+        - Asienta fecha_recepcion = NOW()
+        - Orden finalizada exitosamente
+    end note
+
+    EN_TRANSITO --> DISCREPANCIA: Operario de Destino constata faltante, sobrante o rotura (cantidad_recibida != cantidad_enviada)
+    note right of DISCREPANCIA
+        Guardas:
+        - id_usuario_recibe autenticado
+        - motivo_discrepancia obligatorio
+        Side Effects:
+        - Incremento en destino sólo de lo recibido físicamente:
+          stock_fisico = stock_fisico + cantidad_recibida
+        - Asienta fecha_recepcion = NOW() y motivo_discrepancia
+        - Alerta automática en AUDITORIA y panel central
+    end note
+
+    DISCREPANCIA --> DISCREPANCIA_RESUELTA: Administrador Global regulariza diferencia en Panel Nube
+    note right of DISCREPANCIA_RESUELTA
+        Guardas:
+        - id_usuario_resuelve_discrepancia con permiso de Administrador
+        - Dictamen administrativo y contable
+        Side Effects:
+        - Ajuste de reclamo logístico / merma de transporte
+        - Asienta fecha_resolucion_discrepancia = NOW()
+        - Orden cerrada e inmutable
+    end note
+
+    COMPLETADA --> [*]
+    DISCREPANCIA_RESUELTA --> [*]
+    CANCELADA --> [*]
+```
+
+&nbsp;
+
+## Reglas de Integridad y Transiciones
+
+1. **Precondición Dual (C-24):** El estado `PENDIENTE_DESPACHO` únicamente puede generarse si la API central confirma que `SUCURSAL.en_linea = true` para ambas tiendas involucradas.  
+2. **Inexistencia de Re-enrutamiento:** Una orden `EN_TRANSITO` jamás puede cambiar de destino en vuelo. Si la carga física debe redirigirse a una tercera sucursal, primero debe completarse la recepción en destino y luego emitir una nueva orden.  
+3. **Precisión Decimal (O-08):** Todo cálculo de descuento e incremento en `PRODUCTO_SUCURSAL.stock_fisico` respeta el tipo de dato `decimal`, asegurando trazabilidad para productos a granel o pesables sin pérdida de precisión.
+
+### 4.4 Máquina de Estados de Turno de Caja
+
+# Diagrama de Máquina de Estados: Ciclo de Vida de Turno de Caja
+
+Este diagrama formaliza el ciclo de vida de la entidad `TURNO_CAJA`, garantizando la coexistencia armoniosa entre el principio de **Instantánea Contable Inmutable** (POSLyon.md) y la capacidad de **Rectificación y Re-apertura Auditada por Administrador** (ERS RF-17), eliminando la ambigüedad señalada en el hallazgo **O-16**.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ABIERTO: Cajero inicia turno con fondo de caja (monto_inicial_efectivo)
+
+    ABIERTO --> ABIERTO: Registro de ventas (efectivo/digital), abonos de cuentas corrientes y sangrías/egresos
+
+    ABIERTO --> CERRADO: Cajero ejecuta "Cierre Ciego" declarando efectivo_declarado
+    note right of CERRADO
+        Guardas:
+        - Cajero NO tiene visibilidad de efectivo_esperado
+        Side Effects:
+        - Sistema calcula internamente:
+          efectivo_esperado = FondoInicial + VentasEfectivo + AbonosEfectivo - Egresos
+          diferencia_caja = efectivo_declarado - efectivo_esperado
+        - Asienta fecha_cierre = NOW()
+        - Congela instantánea histórica del cajero
+        - Bloquea la terminal para nuevas ventas en ese turno
+    end note
+
+    CERRADO --> RECTIFICADO: Administrador corrige discrepancia de conteo o billetes rezagados
+    note right of RECTIFICADO
+        Guardas:
+        - Permiso de Administrador requerido
+        - Motivo textual obligatorio en AUDITORIA
+        Side Effects:
+        - Preserva intactos efectivo_declarado y fecha_cierre originales del cajero
+        - Asienta campos de auditoría:
+          efectivo_rectificado, fecha_rectificacion, id_usuario_rectifica
+        - Inmutabiliza la contabilidad fiscal
+    end note
+
+    CERRADO --> REABIERTO_AUDITADO: Administrador autoriza re-apertura excepcional (ej. corte de energía prolongado)
+    note right of REABIERTO_AUDITADO
+        Guardas:
+        - Autorización de Administrador con motivo formal
+        Side Effects:
+        - Registro forense en AUDITORIA ('REAPERTURA_TURNO_CAJA')
+        - Habilita temporalmente la carga de comprobantes pendientes
+    end note
+
+    REABIERTO_AUDITADO --> RECTIFICADO: Cierre definitivo post-reapertura con nuevo arqueo
+    note right of RECTIFICADO
+        Recalcula diferencia_caja final
+        y sella el turno de forma inmutable
+    end note
+
+    CERRADO --> [*]
+    RECTIFICADO --> [*]
+```
+
+&nbsp;
+
+## Principios Arquitectónicos del Ciclo de Turno
+
+1. **Cierre Ciego Estricto (RF-17):** El cajero declara el monto físico en gaveta sin conocer el valor esperado calculado por el software, impidiendo la sustracción o compensación manual de sobrantes.  
+2. **Inmutabilidad de la Declaración Original:** El paso al estado `RECTIFICADO` jamás sobrescribe lo que el cajero declaró al cerrar su turno. Ambas cifras (lo declarado originalmente por el operario y lo rectificado por la supervisión) se conservan con fines forenses y análisis de desempeño.  
+3. **Vínculo Transaccional con Ventas (C-06):** Toda venta confirmada referencia obligatoriamente `id_turno_caja`, permitiendo reconstruir en cualquier momento el libro diario y arqueo del turno.
+
+### 4.5 Máquina de Estados de Alerta de Cuarentena
+
+# Diagrama de Máquina de Estados: Ciclo de Vida de Alerta de Cuarentena
+
+Este diagrama formaliza el ciclo de vida de la entidad `ALERTA_CUARENTENA`, vinculando la detección de faltantes durante la preparación guiada de pedidos en terminal móvil con la resolución forense en mostrador/depósito conforme a **ERS RF-03**, **RF-13**, **RF-19** y la resolución arquitectónica **C-23**.
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDIENTE: Embalador reporta faltante en estante durante preparación guiada (LAN)
+
+    note right of PENDIENTE
+        Disparador:
+        - Carrito pasa a INCOMPLETO
+        - Se crea ALERTA_CUARENTENA con cantidad_faltante
+        Side Effects:
+        - Pone en cuarentena lógica el producto en la sucursal
+        - Notifica al Encargado/Administrador en el Panel Web
+    end note
+
+    PENDIENTE --> MERMA_CONFIRMADA: Encargado constata ausencia física real (rotura, vencimiento o robo)
+    note right of MERMA_CONFIRMADA
+        Guardas:
+        - id_usuario_resuelve autenticado
+        - Inspección física negativa
+        Side Effects (Resolución C-23):
+        - Deducción proporcional exacta:
+          stock_fisico = stock_fisico - cantidad_faltante
+        - Libera el remanente legítimo de la cuarentena
+        - Asienta AUDITORIA ('MERMA_FISICA_CONFIRMADA')
+        - Asienta fecha_resolucion = NOW()
+    end note
+
+    PENDIENTE --> FALSA_ALARMA: Encargado halla el producto traspapelado o en otra góndola
+    note right of FALSA_ALARMA
+        Guardas:
+        - id_usuario_resuelve autenticado
+        - Conteo físico positivo
+        Side Effects:
+        - NO modifica stock_fisico (el stock existía)
+        - Libera el producto de la cuarentena a disponible
+        - Asienta AUDITORIA ('FALSA_ALARMA_CUARENTENA')
+        - Asienta fecha_resolucion = NOW()
+    end note
+
+    MERMA_CONFIRMADA --> [*]
+    FALSA_ALARMA --> [*]
+```
+
+&nbsp;
+
+## Reglas de Negocio del Flujo de Cuarentena
+
+1. **Aislamiento por Sucursal (C-22 y C-23):** La alerta y su eventual merma aplican exclusivamente a `PRODUCTO_SUCURSAL` del local emisor (`WHERE id_producto = :id AND id_sucursal = :sucursal`).  
+2. **Deducción No Destructiva (C-23):** Se prohíbe terminantemente "ajustar a 0" las existencias si faltaban menos unidades de las que figuraban en el sistema (ej. si el sistema marcaba 10 y faltaron 2, el stock se ajusta a 8, preservando las 8 unidades reales encontradas).  
+3. **Auditoría Forense Obligatoria:** Tanto la confirmación de merma como la falsa alarma exigen registrar al usuario responsable y un motivo textual explicativo en la tabla `AUDITORIA`.
+
+---
+
+## ⏱️ Capítulo 5: Diagramas de Secuencia Transaccionales
+
+### 5.1 Sincronización Push y Catch-Up
+
+sequenceDiagram
+
+autonumber
+
+actor A as Administrador participant S as Servidor (PostgreSQL) participant W as Sync Engine (WatermelonDB/Socket) participant B as App Sucursal (SQLite)
+
+Note over S,B: ESCENARIO 1: Conexión Estable (Push en Tiempo Real)
+
+B-\>\>W: Abre conexión persistente (WebSocket) A-\>\>S: Actualiza precio "Queso" a \$8.000 S-\>\>S: UPDATE productos SET precio=8000, updated\_at=10:05 S-\>\>W: Notifica cambio a través de Logical Replication W--\>\>B: PUSH (Precio Queso: \$8.000) B-\>\>B: Actualiza SQLite y UI (Costo de red casi nulo, tiempo \< 100ms)
+
+Note over S,B: ESCENARIO 2: Pérdida de Conexión y Cambios Múltiples
+
+Note over B: Corte de Fibra Óptica (Offline) A-\>\>S: Actualiza precio "Fiambre" a \$5.000 (updated\_at=11:00) A-\>\>S: Elimina "Cerveza" (soft delete, updated\_at=11:15) S-\>\>W: Notifica cambios W-x+B: Intenta PUSH pero falla (Sucursal inaccesible) Note over W: El servidor NO encola mensajes por sucursal.<br/>Simplemente actualiza su base de datos y avanza.
+
+Note over S,B: ESCENARIO 3: Reconexión y Sincronización por Cursor
+
+Note over B: Vuelve el Internet (13:00) B-\>\>S: GET /sync?last\_pulled\_at=2026-10-18T10:05:00.000Z (El "Cursor ISO-8601 UTC") Note over B,S: La sucursal solicita únicamente los deltas<br/>posteriores a su última sincronización exitosa. S--\>\>B: Retorna Array \[Fiambre (\$5.000), Cerveza (deleted: true)\] B-\>\>B: Ejecuta transacciones en SQLite local B-\>\>W: Reestablece conexión persistente (WebSocket)
+
+Note over B,S: Sincronización de subida (Background) B-\>\>S: POST /sync\_up { ventas\_offline: \[...\] } S-\>\>S: Procesa tickets generados durante el corte
+
+### 5.2 Sincronización Local-First y WebSockets
+
+# Diagrama de Secuencia: Preparación Guiada Local-First, WebSockets y Sincronización
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama modela la interacción en tiempo real entre la **Terminal de Mostrador (Caja)** y la **Terminal Móvil (Embalador / Preparador)** dentro de la red de área local (LAN) de la sucursal mediante WebSockets, junto con el mecanismo de persistencia local en SQLite (WatermelonDB) y sincronización asíncrona hacia la Nube (PostgreSQL).
+
+Garantiza:
+
+1. **Flujo Guiado de Preparación (Focus / Highlight):** Orientación visual producto por producto en el móvil del preparador.  
+2. **Detección de Faltantes y Bloqueo Estricto de Cobro (Resolución C-11):** Transición inmediata a `INCOMPLETO` ante faltantes de mercadería y deshabilitación inquebrantable del cobro hasta su regularización en mostrador.  
+3. **Resiliencia Local-First y Operación sin Internet:** Todas las operaciones críticas de mostrador y preparación operan sin depender de la nube.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor C as Cajero (PC Mostrador)
+    actor E as Preparador (Móvil)
+    participant BDL as BD Local (SQLite / WatermelonDB)
+    participant WS as Servidor Local (WebSocket LAN)
+    participant N as Nube (PostgreSQL / NestJS)
+
+    rect rgb(240, 248, 255)
+    note over C, WS: Fase 1: Carga en Mostrador y Asignación de Preparación
+    C->>BDL: Crea Carrito (estado_general = 'BORRADOR', estado_logistico = 'A_PREPARAR')
+    C->>BDL: Escanea productos (+Stock Reservado / Soft Allocation)
+    C->>WS: Clic "Preparar" -> Emite "PEDIDO_INICIAR_PREPARACION" { id_venta }
+    WS-->>E: Push WebSocket: Abre pedido en celular (estado_logistico = 'PREPARANDO')
+    end
+
+    rect rgb(255, 250, 230)
+    note over E, WS: Fase 2: Recorrido Guiado con Modo Focus / Highlight
+    E->>E: UI activa Ítem 1 (Highlight) y opaca el resto de la pantalla
+    E->>E: Operador halla producto físico en góndola y presiona "OK"
+    E->>WS: Emite "ITEM_PREPARADO_OK" { id_venta, id_producto }
+    WS-->>C: Notifica progreso (Ítem 1 marcado en verde en mostrador)
+    E->>E: UI desplaza Highlight automáticamente al Ítem 2
+    end
+
+    rect rgb(255, 235, 235)
+    note over C, E: Fase 3: Detección de Faltante y Bloqueo Estricto de Cobro (C-11)
+    E->>E: Ítem 2: Stock insuficiente en salón -> Clic "Incompleto"
+    E->>WS: Emite "PEDIDO_INCOMPLETO" { id_venta, id_producto, cant_hallada: 2, cant_solicitada: 5 }
+    WS->>BDL: UPDATE VENTA SET estado_logistico = 'INCOMPLETO'
+    WS-->>C: Push WebSocket: Alerta de discrepancia en mostrador
+    
+    note over C, E: GUARDA DE SEGURIDAD CRÍTICA (C-11):<br/>Botón "Cobrar" y "Finalizar" DESHABILITADOS en todas las terminales
+    
+    C->>C: Cajero consulta con cliente en mostrador
+    C->>BDL: Regulariza Carrito: Actualiza renglón a 2 unidades
+    BDL->>BDL: Recalcula total venta y retorna estado_logistico = 'A_PREPARAR'
+    C->>WS: Emite "CARRITO_REGULARIZADO" { id_venta, nuevo_total }
+    WS-->>E: Actualiza vista móvil -> Desbloqueo de cobro liberado
+    end
+
+    rect rgb(240, 255, 240)
+    note over C, BDL: Fase 4: Cobro Atómico y Cierre en Mostrador
+    C->>BDL: Clic "Cobrar" (Venta presencial prioritaria)
+    BDL->>BDL: BEGIN TRANSACTION
+    BDL->>BDL: UPDATE VENTA SET estado_general = 'CONFIRMADA', estado_logistico = 'ENTREGADO', id_turno_caja = turno_activo.id
+    BDL->>BDL: INSERT INTO PAGO_VENTA (id_venta, id_metodo_pago, monto)
+    BDL->>BDL: UPDATE PRODUCTO_SUCURSAL SET stock_fisico = stock_fisico - cant, stock_reservado = stock_reservado - cant
+    BDL->>BDL: COMMIT
+    BDL-->>C: Venta confirmada localmente -> Imprime Ticket fiscal/comprobante
+    C->>WS: Emite "VENTA_FINALIZADA" { id_venta }
+    WS-->>E: Remueve pedido finalizado del panel móvil
+    end
+
+    rect rgb(245, 245, 255)
+    note over BDL, N: Fase 5: Sincronización Asíncrona a la Nube (Worker Background)
+    loop Cada intervalo configurado o evento de cambio
+        BDL->>BDL: Consulta ventas con estado_general = 'CONFIRMADA' y updated_at > last_cursor
+        BDL->>N: POST /api/sync/push { deltas: [ventas_confirmadas] }
+        alt Conexión Nube Exitosa
+            N->>N: BEGIN TRANSACTION
+            N->>N: Valida e inserta Venta y Pagos con UUIDs de origen
+            N->>N: Aplica deltas a stock central
+            N->>N: COMMIT
+            N-->>BDL: 200 OK { nuevo_cursor }
+            BDL->>BDL: Actualiza cursor local de sincronización
+        else Sin Conexión a Internet / Servidor Inaccesible
+            N--xBDL: Timeout / Error de red
+            BDL->>BDL: Retiene deltas en cola local. Reintenta en el próximo ciclo sin detener el mostrador.
+        end
+    end
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Eventos WebSocket LAN
+
+| Evento WebSocket | Emisor | Receptores | Payload Clave | Comportamiento en Receptor |
+| :---- | :---- | :---- | :---- | :---- |
+| `PEDIDO_INICIAR_PREPARACION` | Mostrador (PC) | Embaladores (Móviles) | `{ id_venta, items }` | Abre la pantalla de preparación guiada con focus en ítem 0\. |
+| `ITEM_PREPARADO_OK` | Embalador (Móvil) | Mostrador (PC) | `{ id_venta, id_producto }` | Pinta el ítem en verde y actualiza barra de progreso en mostrador. |
+| `PEDIDO_INCOMPLETO` | Embalador (Móvil) | Mostrador (PC) | `{ id_venta, id_producto, cant_hallada }` | Activa alerta roja y **bloquea el botón de cobro** en ambas pantallas. |
+| `CARRITO_REGULARIZADO` | Mostrador (PC) | Embaladores (Móviles) | `{ id_venta, items_actualizados, total }` | Vuelve el pedido a estado regular y **desbloquea el cobro**. |
+| `VENTA_FINALIZADA` | Mostrador (PC) | Embaladores (Móviles) | `{ id_venta }` | Cierra la vista del pedido en móvil y retorna a la lista de espera. |
+
+&nbsp;
+
+### 5.3 Flujo de Sincronización Local-First y Resolución de Conflictos
+
+# Diagrama de Secuencia: Flujo de Sincronización Local-First y Push Delta a la Nube
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama formaliza el flujo de sincronización asíncrona por deltas (*Push Delta*) desde la base de datos local SQLite (WatermelonDB) hacia el backend central PostgreSQL (NestJS), resolviendo íntegramente las ambigüedades arquitectónicas documentadas en **C-10**, **C-12**, **C-16** y **O-18**.
+
+Garantiza:
+
+1. **Filtrado Estricto de Carga (Resolución C-16):** El worker de sincronización escanea y sube **únicamente** transacciones con `estado_general = 'CONFIRMADA'`. Los carritos en `BORRADOR` y las reservas expiradas en `DESCARTADO` residen y fenecen exclusivamente en el almacenamiento local de la sucursal.  
+2. **Evaluación Ortogonal e Independiente de Conflictos (Resolución O-18):** El impacto en el inventario y la actualización de crédito a clientes son tratados como **dos flujos concurrentes e independientes** dentro de la misma transacción ACID de PostgreSQL, desterrando el antipatrón de modelarlos como ramas `alt/else` mutuamente excluyentes (una venta puede tener simultáneamente stock negativo y colisión de crédito).  
+3. **Persistencia Completa y Descuento Nominal de Stock (Resolución O-18):** Se ilustra explícitamente la inserción de cabecera `VENTA`, renglones `VENTA_DETALLE` y pagos `PAGO_VENTA`, así como el descuento normal de existencias físicas en la nube (`UPDATE PRODUCTO_SUCURSAL SET stock_fisico = stock_fisico - cantidad`), registrando alertas forenses solo si el stock resultante pasa a valores negativos.  
+4. **Merge Aditivo Acumulativo OCC (Resolución C-10):** Si la venta incluye pagos a crédito (`CUENTA_CORRIENTE`), el servidor valida el campo `version` del cliente. Si detecta una colisión concurrente, ejecuta un bloqueo pesimista (`FOR UPDATE`) y aplica un merge aditivo acumulativo (`saldo_deudor = saldo_deudor + delta`), protegiendo la integridad del libro mayor.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor C as Cajero / POS Local
+    participant BDL as BD Local (SQLite / WatermelonDB)
+    participant Sync as Worker Sync Local (Background)
+    participant API as Backend Cloud (NestJS)
+    participant BDCentral as BD Central (PostgreSQL)
+
+    rect rgb(240, 248, 255)
+    note over C, BDL: FASE 1: Transacción Atómica de Cobro en Mostrador (Sin Latencia)
+    C->>BDL: Presiona "Cobrar" (Venta Presencial)
+    BDL->>BDL: BEGIN TRANSACTION (SQLite)
+    BDL->>BDL: 1. UPDATE VENTA SET estado_general = 'CONFIRMADA', estado_logistico = 'ENTREGADO', id_turno_caja = :id_turno, updated_at = NOW()
+    BDL->>BDL: 2. INSERT INTO VENTA_DETALLE (id, id_venta, id_producto, cantidad, precio_unitario, ...)
+    BDL->>BDL: 3. UPDATE PRODUCTO_SUCURSAL SET stock_fisico = stock_fisico - cant, stock_reservado = stock_reservado - cant
+    BDL->>BDL: 4. INSERT INTO PAGO_VENTA (id, id_venta, id_metodo_pago, monto)
+    opt Si la Venta incluye Fiado / Crédito
+        BDL->>BDL: 5. INSERT INTO CUENTA_CORRIENTE (id_cliente, id_venta, monto: +deuda, tipo: 'VENTA_CREDITO')
+        BDL->>BDL: 6. UPDATE CLIENTE SET saldo_deudor = saldo_deudor + deuda, version = version + 1
+    end
+    BDL->>BDL: COMMIT TRANSACTION
+    BDL-->>C: Venta confirmada e inmutable (Imprime Ticket fiscal / comprobante)
+    end
+
+    rect rgb(240, 255, 240)
+    note over Sync, BDL: FASE 2: Extracción y Filtrado Estricto de Deltas (Resolución C-16)
+    loop Worker Periódico en Background (o disparado por confirmación)
+        Sync->>BDL: SELECT * FROM ventas WHERE estado_general = 'CONFIRMADA' AND updated_at > :last_pushed_at
+        note over Sync, BDL: Regla C-16: Carritos en 'BORRADOR' y 'DESCARTADO'<br/>se ignoran y NO se envían a la nube
+        BDL-->>Sync: Retorna Lote con VENTA, VENTA_DETALLE, PAGO_VENTA y CUENTA_CORRIENTE
+        Sync->>API: POST /api/sync/push { deltas: [lote_ventas_confirmadas], last_pulled_at: :cursor }
+    end
+    end
+
+    rect rgb(255, 245, 238)
+    note over API, BDCentral: FASE 3: Consolidación Transaccional en PostgreSQL (Resolución O-18)
+    API->>BDCentral: BEGIN TRANSACTION (PostgreSQL ACID)
+    
+    note over API, BDCentral: Paso A: Inserción de Comprobante Completo
+    API->>BDCentral: INSERT INTO VENTA (id, numero_comprobante, id_sucursal, id_turno_caja, total, estado_general: 'CONFIRMADA', ...)
+    API->>BDCentral: INSERT INTO VENTA_DETALLE (id, id_venta, id_producto, cantidad, precio_unitario, monto_descuento, ...)
+    API->>BDCentral: INSERT INTO PAGO_VENTA (id, id_venta, id_metodo_pago, monto)
+
+    note over API, BDCentral: Paso B: Descuento Nominal de Inventario en Góndola (Evaluación Independiente)
+    API->>BDCentral: UPDATE PRODUCTO_SUCURSAL SET stock_fisico = stock_fisico - :cant WHERE id_producto = :id AND id_sucursal = :sucursal
+    opt Stock Resultante < 0 (Aceptación de Stock Negativo - Resolución C-12)
+        API->>BDCentral: INSERT INTO AUDITORIA (tabla: 'PRODUCTO_SUCURSAL', accion: 'VENTA_OFFLINE_STOCK_NEGATIVO', valor_nuevo: { stock: stock_resultante })
+    end
+
+    note over API, BDCentral: Paso C: Consolidación de Crédito en Cuenta Corriente (Evaluación Ortogonal)
+    opt Si la Venta contiene Pagos a Crédito (CUENTA_CORRIENTE)
+        API->>BDCentral: INSERT INTO CUENTA_CORRIENTE (id, id_cliente, id_venta, monto: +deuda, tipo: 'VENTA_CREDITO')
+        API->>BDCentral: UPDATE CLIENTE SET saldo_deudor = saldo_deudor + delta_credito, version = version + 1 WHERE id = :id_cliente AND version = :version_local
+        alt Versión Coincide (Sin Colisión Concurrente)
+            BDCentral-->>API: Rows affected = 1 (Actualización Exitosa)
+        else Colisión Concurrente (Resolución OCC Merge Aditivo - Resolución C-10)
+            API->>BDCentral: SELECT saldo_deudor, limite_credito FROM CLIENTE WHERE id = :id_cliente FOR UPDATE
+            API->>BDCentral: UPDATE CLIENTE SET saldo_deudor = saldo_deudor + delta_credito, version = version + 1 WHERE id = :id_cliente
+            API->>BDCentral: INSERT INTO AUDITORIA (tabla: 'CLIENTE', accion: 'RESOLUCION_MERGE_OCC', motivo: 'Merge aditivo acumulativo de venta offline confirmada')
+        end
+    end
+
+    API->>BDCentral: COMMIT TRANSACTION
+    BDCentral-->>API: Transacción Central Consolidada Exitosamente
+    API-->>Sync: 200 OK { nuevo_cursor: :timestamp, status: 'SUCCESS' }
+    Sync->>BDL: UPDATE SYNC_CURSOR SET last_pushed_at = :nuevo_cursor
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Filtrado y Persistencia según Dimensión General
+
+| Estado General | ¿Se persiste en SQLite Local? | ¿Se sincroniza a PostgreSQL Nube? | Justificación Arquitectónica (C-16 y Ciclo de Vida) |
+| :---- | :---- | :---- | :---- |
+| `BORRADOR` | **SÍ** | **NO** | Reside estrictamente en SQLite local. Evita saturar la base central con carritos temporales o en armado. Solo reserva stock (`stock_reservado`). |
+| `DESCARTADO` | **SÍ** (marca local) | **NO** | Carrito en borrador cancelado por el cajero o purgado por Garbage Collection. Solo libera `stock_reservado`; nunca afectó `stock_fisico` ni dinero. Permanece local. |
+| `CONFIRMADA` | **SÍ** | **SÍ** | Venta legal, fiscal y físicamente consumada. Descuenta `stock_fisico`, fija `id_turno_caja` y viaja vía Push Delta a PostgreSQL. |
+| `CANCELADA` | **SÍ** | **SÍ** | **Anulación formal de una venta previamente `CONFIRMADA`**. Reingresa el 100 % de los productos al `stock_fisico`, evalúa reintegro monetario según `estado_financiero` y se sincroniza a la Nube para anular la transacción remota y registrar la auditoría forense. |
+
+&nbsp;
+
+### 5.4 Sincronización de Reservas LAN entre Cajas
+
+# Diagrama de Secuencia: Sincronización de Reservas (Soft Allocation) entre Cajas en LAN
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama modela la sincronización en tiempo real de la reserva dinámica de stock (*Soft Allocation*) entre múltiples puntos de venta concurrentes en una misma sucursal, resolviendo el hallazgo **C-15**.
+
+Garantiza:
+
+1. **Sincronización Local sin Dependencia de Internet (Resolución C-15):** En una sucursal con dos o más cajas (Caja A, Caja B) y terminales móviles, los eventos de reserva de stock se propagan a través de la red de área local (LAN) mediante WebSockets (Socket.io). No se requiere conexión a la nube ni consultas remotas a PostgreSQL para mantener la coherencia del stock disponible en salón.  
+2. **Cálculo de Stock Disponible Distribuido:** $$\text{StockDisponible} = \text{StockFisico} - \text{StockReservado}$$ Cuando la Caja A escanea un producto en un carrito borrador, la Caja B refleja inmediatamente el incremento en `stock_reservado`, evitando prometer mercadería ya retenida en el mostrador contiguo.  
+3. **Resiliencia ante Caídas de Red Wi-Fi LAN:** Si la red local se interrumpe y las terminales quedan aisladas, ninguna venta se detiene. En virtud de la regla **C-12 (Stock Negativo Universal)**, el cajero puede cobrar de inmediato y cualquier colisión física es absorbida en mostrador y regularizada posteriormente mediante auditoría.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor CA as Cajero 1 (Caja A)
+    participant BDLA as SQLite Local (Caja A)
+    participant WSLAN as Gateway WebSocket LAN (Sucursal)
+    participant BDLB as SQLite Local (Caja B)
+    actor CB as Cajero 2 (Caja B)
+
+    rect rgb(240, 248, 255)
+    note over CA, BDLB: FASE 1: Carga de Ítem en Caja A y Difusión Local de Reserva (Soft Allocation)
+    CA->>BDLA: Escanea 2 unidades de "Coca-Cola 2.25L" (Stock Físico: 10, Reservado: 0)
+    BDLA->>BDLA: Actualiza SQLite Local: stock_reservado = 0 + 2 = 2
+    BDLA-->>CA: Carrito actualizado (Stock Disponible local = 10 - 2 = 8)
+    
+    CA->>WSLAN: Emite evento LAN "RESERVA_STOCK_LOCAL" { id_producto: 'coca-1', delta_reservado: +2 }
+    WSLAN-->>BDLB: Broadcast LAN WebSocket a todas las demás terminales
+    BDLB->>BDLB: Actualiza SQLite Caja B: stock_reservado = 0 + 2 = 2
+    BDLB-->>CB: UI Caja B actualiza catálogo en vivo: Stock Disponible = 10 - 2 = 8
+    end
+
+    rect rgb(255, 250, 230)
+    note over CB, BDLB: FASE 2: Consulta Concurrente en Caja B
+    CB->>BDLB: Cliente en Caja B solicita "Coca-Cola 2.25L"
+    BDLB-->>CB: Muestra Stock Físico: 10 | Reservado: 2 | DISPONIBLE: 8
+    note over CB: Cajero 2 ve con exactitud que 2 unidades<br/>ya están reservadas en otro mostrador
+    end
+
+    rect rgb(240, 255, 240)
+    note over CA, BDLB: FASE 3: Cobro y Cierre de Venta en Caja A (Consolidación Física)
+    CA->>BDLA: Clic "Cobrar" (Venta CONFIRMADA)
+    BDLA->>BDLA: BEGIN TRANSACTION
+    BDLA->>BDLA: stock_fisico = 10 - 2 = 8
+    BDLA->>BDLA: stock_reservado = 2 - 2 = 0
+    BDLA->>BDLA: COMMIT
+    BDLA-->>CA: Ticket impreso y venta cerrada
+    
+    CA->>WSLAN: Emite evento LAN "VENTA_CONFIRMADA_LOCAL" { id_producto: 'coca-1', cantidad_vendida: 2 }
+    WSLAN-->>BDLB: Broadcast LAN a Caja B
+    BDLB->>BDLB: Actualiza SQLite Caja B: stock_fisico = 10 - 2 = 8, stock_reservado = 2 - 2 = 0
+    BDLB-->>CB: UI Caja B refleja estado final: Stock Físico: 8, Reservado: 0, DISPONIBLE: 8
+    end
+
+    rect rgb(255, 235, 235)
+    note over CA, BDLB: FASE 4: Liberación por Cancelación o Expiración (Garbage Collection)
+    opt Si Caja A descarta el carrito o expira por inactividad
+        CA->>BDLA: Carrito cancelado / GC Worker purga borrador
+        BDLA->>BDLA: Revierte stock_reservado = stock_reservado - 2
+        CA->>WSLAN: Emite evento LAN "RESERVA_STOCK_LOCAL" { id_producto: 'coca-1', delta_reservado: -2 }
+        WSLAN-->>BDLB: Broadcast LAN a Caja B
+        BDLB->>BDLB: Revierte stock_reservado = stock_reservado - 2
+        BDLB-->>CB: Stock Disponible en Caja B vuelve al 100% (10 unidades)
+    end
+    end
+
+    rect rgb(245, 245, 255)
+    note over CB, BDLB: FASE 5: Resiliencia ante Desconexión de Red LAN Wi-Fi
+    opt Si se corta la red Wi-Fi local de la sucursal
+        WSLAN--xBDLB: Conexión LAN temporalmente inaccesible
+        CB->>BDLB: Escanea y cobra en mostrador usando stock local
+        note over CB, BDLB: Regla C-12: Stock Negativo Universal.<br/>Ninguna venta se bloquea. El mostrador opera con 100% de autonomía.
+    end
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Eventos LAN de Inventario en Sucursal
+
+| Evento WebSocket LAN | Emisor | Receptores | Payload Clave | Efecto en Receptor |
+| :---- | :---- | :---- | :---- | :---- |
+| `RESERVA_STOCK_LOCAL` | Caja que muta carrito / GC | Demás Cajas y Móviles | `{ id_producto, delta_reservado }` | Aplica `stock_reservado = stock_reservado + delta_reservado` en SQLite local. |
+| `VENTA_CONFIRMADA_LOCAL` | Caja que consuma cobro | Demás Cajas y Móviles | `{ id_producto, cantidad_vendida }` | Aplica `stock_fisico = stock_fisico - cant` y `stock_reservado = stock_reservado - cant`. |
+| `CARRITO_EXPIRADO` | GC Worker local | Pantallas mostrador y móvil | `{ id_venta }` | Desaloja el pedido expirado de la vista del operador. |
+
+&nbsp;
+
+### 5.5 Flujo de Pago Mixto (Abono Rápido \+ Fiado)
+
+```mermaid
+sequenceDiagram
+
+autonumber
+
+actor C as Cajero
+participant F as Frontend (POS)
+participant B as Backend / BD Local
+
+Note over C,B: VENTA CON PAGO MIXTO (Efectivo + Fiado)
+
+C->>F: Agrega productos al carrito (Total: $67.000)
+C->>F: Clic en "Finalizar Venta"
+F->>C: Muestra Modal de Pagos
+C->>F: Selecciona "Pago Mixto / Múltiple"
+C->>F: Ingresa $17.000 (Efectivo) y $50.000 (Cuenta Corriente)
+
+Note over F: Validaciones Locales
+
+F->>F: Valida Suma de Pagos ($67.000) == Total Venta
+F-->>C: Solicita vincular Cliente
+C->>F: Selecciona Cliente
+F->>B: GET /clientes/{id} (Valida Límite de Crédito)
+B-->>F: Límite Aprobado
+
+F->>B: POST /ventas { total: 67000, pagos: [...] }
+
+Note over B: TRANSACCIÓN ATÓMICA (BEGIN)<br/>Consultas SQL a ejecutar:
+
+B->>B: 1. INSERT INTO venta (id, id_turno_caja, id_cliente, total, estado_financiero)<br/> VALUES (uuid_venta, turno_actual, cliente_id, 67000, 'PARCIAL') RETURNING id;
+
+B->>B: 2. INSERT INTO pago_venta (id_venta, id_metodo_pago, monto)<br/> VALUES (id_venta, 'EFECTIVO', 17000), (id_venta, 'CUENTA_CORRIENTE', 50000);
+
+B->>B: 3. UPDATE cliente SET saldo_deudor = saldo_deudor + 50000, version = version + 1<br/> WHERE id = cliente_id;
+
+B->>B: 4. INSERT INTO cuenta_corriente (id_cliente, id_venta, monto, tipo_movimiento)<br/> VALUES (cliente_id, id_venta, 50000, 'VENTA_CREDITO');
+
+Note over B: COMMIT (Fin Transacción)
+
+B-->>F: Venta registrada exitosamente
+F->>F: Genera Ticket Mixto
+
+Note right of F: Ticket detalla:<br/>Total: $67.000<br/>Efectivo: $17.000<br/>A Cuenta: $50.000
+
+F-->>C: Envía a Impresora
+```
+
+&nbsp;
+
+### 5.6 Flujo de Crédito y Abonos (Signed Ledger e Idempotencia)
+
+```mermaid
+sequenceDiagram
+
+autonumber
+
+actor C as Cajero
+participant F as Frontend (POS)
+participant B as Backend / BD Local
+
+Note over C,B: FASE 1: Venta 100% a Fiado (Cuenta Corriente)
+
+C->>F: Selecciona Cliente y solicita venta de $67.000 a Fiado
+
+F->>B: GET /clientes/{id_cliente}
+B-->>F: Retorna { saldo_deudor: 0, limite_credito: 50000, version: 1 }
+
+alt Límite de Crédito Superado (saldo_deudor + total > limite_credito)
+    F-->>C: ERROR: Operación denegada. El monto ($67.000) excede el margen disponible ($50.000).<br/>Requiere pago parcial o autorización de Encargado.
+else Límite de Crédito Aprobado (saldo_deudor + total <= limite_credito)
+    Note over F: Payload estructurado como Array de Pagos (sin string simple)
+    F->>B: POST /ventas {<br/>  id_cliente: cliente_id,<br/>  id_turno_caja: turno_actual,<br/>  total: 67000,<br/>  pagos: [{ id_metodo_pago: 'CUENTA_CORRIENTE', monto: 67000 }]<br/>}
+
+    Note over B: TRANSACCIÓN ATÓMICA VENTA (BEGIN)<br/>1. INSERT VENTA (estado_general: 'CONFIRMADA', estado_financiero: 'FIADO', id_turno_caja: turno_actual)<br/>2. INSERT PAGO_VENTA (id_venta, id_metodo_pago: 'CUENTA_CORRIENTE', monto: 67000)<br/>3. UPDATE CLIENTE (saldo_deudor = saldo_deudor + 67000, version = version + 1)<br/>4. INSERT CUENTA_CORRIENTE (monto: 67000, tipo: 'VENTA_CREDITO')<br/>5. UPDATE PRODUCTO_SUCURSAL (stock_fisico -= q, stock_reservado -= q)
+
+    B-->>F: Venta Exitosa (HTTP 201 Created)
+    F-->>C: Emite Ticket de Venta a Crédito
+end
+
+Note over C,B: FASE 2: Visualización y Abono de Deuda Global con Idempotencia Unificada (O-21, O-22)
+
+C->>F: Navega a "Clientes" y selecciona Cliente
+
+F->>B: GET /clientes/{id}/cuenta_corriente
+
+Note over B: SQL: SELECT saldo_deudor, version FROM cliente WHERE id = ? <br/>SQL: SELECT * FROM cuenta_corriente WHERE id_cliente = ? ORDER BY fecha DESC;
+
+B-->>F: Retorna Saldo Deudor ($67.000) e Historial
+
+F-->>C: Muestra perfil del cliente
+
+C->>F: Clic "Abonar", ingresa $30.000 y selecciona Método de Pago (ej: 'Efectivo' o 'Transferencia')
+
+F->>F: Valida Monto > 0 y Monto <= Saldo Deudor<br/>Genera id_abono = UUIDv4() local para idempotencia unificada
+
+F->>B: POST /clientes/{id}/abono {<br/>  id: id_abono,<br/>  monto: 30000,<br/>  id_metodo_pago: 'uuid-mp',<br/>  id_turno_caja: turno_actual,<br/>  expected_version: 1<br/>}
+
+Note over B: TRANSACCIÓN ATÓMICA ABONO (BEGIN)<br/>1. SELECT afecta_caja_fisica FROM metodo_pago WHERE id = id_metodo_pago;
+
+B->>B: 2. INSERT INTO cuenta_corriente (id, id_cliente, id_venta, id_metodo_pago, monto, tipo_movimiento)<br/> VALUES (id_abono, cliente_id, NULL, id_metodo_pago, -30000, 'ABONO')<br/> ON CONFLICT (id) DO NOTHING;
+
+B->>B: 3. UPDATE cliente SET saldo_deudor = saldo_deudor - 30000, version = version + 1<br/> WHERE id = cliente_id AND version = 1;
+
+B->>B: 4. INSERT INTO movimiento_caja (id, id_turno_caja, id_metodo_pago, tipo_movimiento, monto, concepto, afecta_caja_fisica)<br/> VALUES (gen_random_uuid(), turno_actual, id_metodo_pago, 'INGRESO', 30000, 'Abono Cuenta Corriente', afecta_caja_fisica);
+
+Note over B: COMMIT (Fin Transacción)<br/>* Si afecta_caja_fisica = true (Efectivo) -> Suma a 'EfectivoEsperado' en Arqueo.<br/>* Si afecta_caja_fisica = false (Transferencia) -> Registra ingreso digital sin alterar billetes físicos.
+
+Note over F,B: Resolución Idempotente (O-22):<br/>Si el push delta de sync posterior reenvía este 'id_abono',<br/>ON CONFLICT (id) DO NOTHING previene re-aplicar el descuento al saldo.<br/>Si el POS operaba offline, el abono viaja únicamente vía push delta con merge aditivo (C-10).
+
+B-->>F: Abono registrado exitosamente (HTTP 201 Created)
+
+F-->>C: Actualiza pantalla (Nuevo saldo: $37.000)
+
+C->>F: Imprimir Comprobante
+
+F-->>C: Envía a Impresora Ticket de Abono con desglose de medio de pago
+```
+
+&nbsp;
+
+### 5.7 Motor de Promociones Dinámicas y Snapshot de Precios
+
+sequenceDiagram
+
+autonumber
+
+actor C as Cajero
+
+participant UI as Interfaz POS (React)
+
+participant DB as BD Local (WatermelonDB)
+
+participant Carrito as Gestor de Estado (Zustand)
+
+participant Motor as Motor de Promociones (Strategy)
+
+rect rgb(240, 248, 255\)
+
+note right of C: Escaneo del 1er Ítem (No cumple promoción aún)
+
+C-\>\>UI: Escanea Código "Coca-Cola" (Cant: 1\)
+
+UI-\>\>DB: Busca producto localmente
+
+DB--\>\>UI: Retorna datos (Precio Normal: \$1500)
+
+UI-\>\>Carrito: addProducto(Coca-Cola, 1\)
+
+Carrito-\>\>Motor: recalcularTotales(itemsDelCarrito)
+
+Motor-\>\>DB: Busca promociones activas para "Coca-Cola"
+
+DB--\>\>Motor: Retorna Promo "2x \$2500" (Cant Min: 2\)
+
+Motor-\>\>Motor: Evalúa reglas (Cant Actual \= 1 \< Min 2\)
+
+Motor--\>\>Carrito: Devuelve items sin modificar
+
+Carrito--\>\>UI: Actualiza estado global
+
+UI--\>\>C: Muestra Subtotal: \$1500
+
+end
+
+rect rgb(240, 255, 240\)
+
+note right of C: Escaneo del 2do Ítem (Se activa la promoción)
+
+C-\>\>UI: Escanea Código "Coca-Cola" (Cant: 2\)
+
+UI-\>\>Carrito: updateCantidad(Coca-Cola, 2\)
+
+Carrito-\>\>Motor: recalcularTotales(itemsDelCarrito)
+
+Motor-\>\>Motor: Evalúa reglas (Cant Actual \= 2 \>= Min 2\)
+
+note right of Motor: Inyecta Strategy "Precio\_Fijo"
+
+Motor-\>\>Motor: Aplica descuento (Total s/Promo: \$3000 \-\> Total Promo: \$2500)
+
+Motor--\>\>Carrito: Devuelve items con 'id\_promocion\_aplicada' y 'monto\_descuento'
+
+Carrito--\>\>UI: Actualiza estado global
+
+UI--\>\>C: Tacha precio viejo, muestra \$2500 y flag "¡Promo Aplicada\!"
+
+end
+
+rect rgb(255, 245, 238\)
+
+note right of C: Escaneo de Producto a Granel
+
+C-\>\>UI: Escanea Código "Pan Francés"
+
+UI-\>\>DB: Busca producto
+
+DB--\>\>UI: Retorna datos (tipo\_venta: 'PESABLE', Precio: \$2000/kg)
+
+UI-\>\>C: Despliega modal "Ingrese Peso en KG"
+
+C-\>\>UI: Ingresa 0.250
+
+UI-\>\>Carrito: addProducto(Pan Francés, 0.250)
+
+Carrito-\>\>Motor: recalcularTotales()
+
+Motor--\>\>Carrito: Retorna Total Pan: \$500
+
+Carrito--\>\>UI: Actualiza estado global
+
+end
+
+### 5.8 Devoluciones y Emisión Correlativa de Notas de Crédito
+
+# Diagrama de Secuencia: Emisión de Notas de Crédito y Devoluciones
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama formaliza el flujo de devoluciones de mercadería y emisión de notas de crédito en cumplimiento estricto de **ERS RF-09**, **RF-10**, **RNF-03** y las resoluciones arquitectónicas **C-01**, **C-02**, **C-03**, **C-04** y **O-19**.
+
+Garantiza:
+
+1. **Validaciones Obligatorias de Backend Post-POST (Resolución O-19):** Las validaciones de negocio e integridad se ejecutan obligatoriamente en el servidor tras recibir el `POST /devoluciones`, desterrando el antipatrón de diagramarlas antes del envío HTTP o dentro de bloques opcionales.  
+2. **Control Anti-Doble Devolución (Resolución O-19):** El backend consulta el histórico de `NOTA_CREDITO_DETALLE` vinculadas a la venta para calcular la cantidad neta devoluble ($\text{devoluble} = \text{vendida} - \sum \text{devuelta\_previa}$), impidiendo que un producto sea devuelto más de una vez.  
+3. **Desacoplamiento Temporal de Caja (Resolución C-06):** El egreso de efectivo impacta en el `TURNO_CAJA` abierto hoy por el cajero que efectúa la devolución, preservando la inmutabilidad contable del turno en que se originó la venta pasada.  
+4. **Garantía de Reembolso Neto Promocional (Resolución C-04):** Si el producto se vendió con descuento o en combo, el importe a reintegrar deduce el descuento unitario proporcional, evitando devolver más dinero del efectivamente cobrado.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor C as Cajero
+    participant F as Frontend (POS)
+    participant B as Backend API (NestJS)
+    participant BD as Base de Datos (PostgreSQL / SQLite)
+
+    rect rgb(240, 248, 255)
+    note over C, BD: FASE 1: Búsqueda, Cálculo de Saldos Devolubles y Selección
+    C->>F: Ingresa Número de Ticket / ID de Venta original
+    F->>B: GET /api/ventas/{id}/devolucion-disponible
+    B->>BD: SELECT v.*, vd.*, COALESCE(SUM(ncd.cantidad), 0) as devuelto_acumulado<br/>FROM venta v<br/>JOIN venta_detalle vd ON vd.id_venta = v.id<br/>LEFT JOIN nota_credito_detalle ncd ON ncd.id_venta_detalle = vd.id<br/>WHERE v.id = :id GROUP BY v.id, vd.id
+    BD-->>B: Retorna datos de venta y saldo neto disponible por renglón
+    B-->>F: Retorna ítems con cantidad_maxima_devoluble = (cantidad - devuelto_acumulado)
+
+    C->>F: Selecciona productos y cantidades a devolver (cant <= max_devoluble)
+
+    alt Venta de Contado (Anónima / id_cliente es NULL)
+        F->>F: Bloquea opciones en UI. Fuerza tipo_devolucion = 'EFECTIVO_CAJA'
+        C->>F: Selecciona "Efectivo (Caja)"
+    else Venta a Cliente Registrado con Cuenta Corriente
+        alt saldo_deudor < monto_devolucion
+            F->>F: Bloquea REDUCCION_DEUDA pura (RF-10)
+            F-->>C: Notificación: Saldo deudor < Reembolso. Aplica compensación mixta.
+            C->>F: Confirma Efectivo con amortización de deuda residual
+        else saldo_deudor >= monto_devolucion
+            F->>F: Habilita opciones: Efectivo o Reducción de Deuda
+            C->>F: Selecciona Tipo de Devolución
+        end
+    end
+    end
+
+    rect rgb(255, 245, 238)
+    note over C, B: FASE 2: Envío y Validaciones Obligatorias de Backend (Resolución O-19)
+    C->>F: Clic en "Confirmar Devolución"
+    F->>B: POST /api/devoluciones { id_venta, items_devueltos, tipo_devolucion }
+    
+    note over B: 1. Validación de Estado de Venta
+    alt Venta no existe o estado_general != 'CONFIRMADA'
+        B-->>F: 400 Bad Request { error: 'La venta no se encuentra confirmada' }
+    end
+
+    note over B: 2. Validación Anti-Doble Devolución (Acumulado Histórico)
+    alt Algún ítem supera: (cantidad_vendida - cantidad_previamente_devuelta)
+        B-->>F: 400 Bad Request { error: 'Cantidad solicitada supera el remanente devoluble del ítem' }
+    end
+
+    note over B: 3. Validación de Compatibilidad de Cliente
+    alt id_cliente IS NULL AND tipo_devolucion != 'EFECTIVO_CAJA'
+        B-->>F: 400 Bad Request { error: 'Venta anónima no admite compensación en cuenta corriente' }
+    end
+    end
+
+    rect rgb(240, 255, 240)
+    note over B, BD: FASE 3: Transacción Atómica ACID en Base de Datos
+    B->>BD: BEGIN TRANSACTION
+    
+    note over B, BD: Paso A: Verificación de Turno de Caja Abierto Hoy
+    B->>BD: SELECT id FROM turno_caja WHERE id_usuario = :cajero AND estado = 'ABIERTO'
+    
+    note over B, BD: Paso B: Inserción de Comprobante Fiscal de Devolución
+    B->>BD: 1. INSERT INTO NOTA_CREDITO (id, id_venta, id_cliente, id_turno_caja: turno_actual.id, monto_total, ...)
+    B->>BD: 2. INSERT INTO NOTA_CREDITO_DETALLE (x cada producto devuelto con monto_descuento neto prorrateado - RF-09)
+    
+    note over B, BD: Paso C: Actualización Inmutable de Venta y Stock
+    B->>BD: 3. UPDATE VENTA SET tiene_devolucion_parcial = true WHERE id = :id_venta
+    B->>BD: 4. UPDATE PRODUCTO_SUCURSAL SET stock_fisico = stock_fisico + cant_devuelta WHERE id_producto = :prod AND id_sucursal = :sucursal
+    
+    note over B, BD: Paso D: Compensación Financiera
+    alt tipo_devolucion == 'EFECTIVO_CAJA'
+        opt Si id_cliente != NULL y tiene saldo_deudor > 0 (RF-10 Compensación Mixta)
+            B->>BD: 5a. UPDATE CLIENTE SET saldo_deudor = saldo_deudor - min(saldo_deudor, monto_total), version = version + 1
+            B->>BD: 5b. INSERT INTO CUENTA_CORRIENTE (id_cliente, id_nota_credito, monto: -amortizado, tipo: 'AJUSTE_DEVOLUCION')
+        end
+        opt Si queda remanente para entregar en mano al cliente
+            B->>BD: 5c. INSERT INTO MOVIMIENTO_CAJA (id_turno_caja: turno_actual.id, tipo: 'EGRESO', monto: remanente_efectivo)
+        end
+    else tipo_devolucion == 'REDUCCION_DEUDA'
+        B->>BD: 5d. UPDATE CLIENTE SET saldo_deudor = saldo_deudor - monto_total, version = version + 1
+        B->>BD: 5e. INSERT INTO CUENTA_CORRIENTE (id_cliente, id_nota_credito, monto: -monto_total, tipo: 'AJUSTE_DEVOLUCION')
+    end
+
+    B->>BD: COMMIT TRANSACTION
+    BD-->>B: Transacción de Devolución Exitosa
+    B-->>F: 201 Created { id_nota_credito, numero_comprobante }
+    F-->>C: Muestra confirmación e imprime Comprobante de Nota de Crédito
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Puntos de Control y Reglas de Negocio
+
+1. **Inmutabilidad del Snapshot Histórico:** La tabla `VENTA` jamás modifica sus totales ni borra filas de `VENTA_DETALLE`. Únicamente conmuta el flag booleano `tiene_devolucion_parcial = true` para auditoría contable.  
+2. **Trazabilidad de Descuentos (RF-09):** `NOTA_CREDITO_DETALLE.subtotal` calcula el valor efectivo desembolsado por el cliente, deduciendo la proporción de descuento de promociones de catálogo ([Resolución C-04](file:///d:/Contr/Downloads/POSLyon/auditoria_trazabilidad_poslyon.md#L39)).  
+3. **Caja Afectada:** Todo egreso de efectivo físico (`MOVIMIENTO_CAJA` de tipo 'EGRESO') se asocia indefectiblemente al `id_turno_caja` del cajero presente, garantizando que el arqueo de hoy cuadre con exactitud sin modificar la historia de turnos pasados.
+
+### 5.9 Saneamiento y Reconciliación SQL de Artículos Comodín
+
+# Diagrama de Secuencia: Limpieza y Reconciliación de Productos de Venta Rápida (Comodín)
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama especifica el proceso formal mediante el cual el Administrador audita y regulariza en el servidor central (PostgreSQL) las ventas históricas efectuadas en terminales locales mediante el **Artículo Comodín** (`codigo_comodin`).
+
+Garantiza:
+
+1. **Desacoplamiento Estricto entre Catálogo y Stock (Resolución C-17):**  
+   - La tabla `PRODUCTO_GLOBAL` almacena los metadatos descriptivos del catálogo central (`id`, `nombre`, `id_categoria`, `unidad_medida`, `es_pesable`). **No almacena stock físico.**  
+   - La tabla `PRODUCTO_SUCURSAL` almacena de forma aislada las existencias reales (`stock_fisico`, `stock_reservado`) y precios para la sucursal de origen (`id_sucursal`).  
+2. **Inmutabilidad Forense de Tickets:** `VENTA_DETALLE` conserva inalterados `nombre_comodin`, `codigo_comodin` y el `precio_unitario` efectivamente cobrado en su momento. Únicamente se actualiza la clave foránea `id_producto` apuntando al UUID oficial del producto.  
+3. **Detección Automática de Mermas/Sobrantes:** Si el precio histórico cobrado difiere del precio oficial de lista, se asienta una discrepancia contable en `AUDITORIA` sin corromper los cierres de caja pasados.  
+4. **Sintaxis Mermaid 100% Válida (Resolución S-01):** Eliminación de negritas Markdown y escapes incorrectos para garantizar renderizado nativo.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as Administrador
+    participant UI as Panel Web (React)
+    participant API as Backend (NestJS)
+    participant DB as Base de Datos (PostgreSQL)
+
+    Note over Admin,UI: FASE 1: Detección y Análisis de Huérfanos
+    Admin->>UI: Abre vista "Reconciliación de Códigos Huérfanos"
+    UI->>API: GET /ventas/huerfanos?id_sucursal=:id_sucursal
+    API->>DB: SELECT vd.codigo_comodin, vd.nombre_comodin, SUM(vd.cantidad) as vendidos, AVG(vd.precio_unitario) FROM venta_detalle vd INNER JOIN venta v ON vd.id_venta = v.id WHERE vd.id_producto = '00000000-0000-0000-0000-000000000000' AND v.id_sucursal = 'uuid-suc' GROUP BY vd.codigo_comodin, vd.nombre_comodin
+    DB-->>API: Retorna filas agrupadas de la sucursal (Ej: Cód '12345' | Vendidos: 3 unidades)
+    API-->>UI: Muestra grilla consolidada de productos huérfanos
+
+    Note over Admin,UI: FASE 2: Decisión y Validación de Stock
+    Admin->>UI: Selecciona ítem huérfano (Cód '12345' | 3 unidades vendidas)
+    UI->>Admin: Opciones: ¿Crear Nuevo Producto o Vincular a Existente?
+
+    alt Opción A: Crear Nuevo Producto Oficial
+        Admin->>UI: Ingresa Nombre, Categoría, Precio Oficial ($1200) y Conteo Físico Actual en Góndola (10)
+        UI->>UI: Calcula Stock de Inserción: 10 (conteo) + 3 (vendidos) = 13 (Sin bloqueos si conteo < vendidos)
+        Admin->>UI: Clic en "Crear y Reconciliar"
+        UI->>API: POST /reconciliar { accion: 'CREAR', id_sucursal: 'uuid-suc', codigo_comodin: '12345', nombre: 'Yerba Mate Playadito 500g', precio_oficial: 1200, stock_fisico_actual: 10 }
+    else Opción B: Vincular a Producto Existente en Catálogo
+        Admin->>UI: Busca y selecciona producto existente ("uuid-yerba")
+        UI->>API: GET /productos/uuid-yerba?id_sucursal=:id_sucursal
+        API->>DB: SELECT stock_fisico, precio_minorista FROM producto_sucursal WHERE id_producto = 'uuid-yerba' AND id_sucursal = 'uuid-suc'
+        DB-->>API: Retorna { stock_fisico: 2, precio_minorista: 1200 }
+        API-->>UI: Datos vigentes en sucursal (Stock Actual: 2)
+        UI->>UI: Evalúa: Stock Actual (2) < Vendidos (3)
+        UI-->>Admin: Advertencia: "Stock en sistema (2) es menor a los vendidos (3). Elija cómo proceder:"
+
+        alt Sub-opción B1: Ajuste Físico en Góndola (Cuadre Inmediato)
+            Admin->>UI: Ingresa conteo físico real en estantería (ej. 5)
+            Admin->>UI: Clic en "Vincular con Ajuste"
+            UI->>API: POST /reconciliar { accion: 'VINCULAR', id_sucursal: 'uuid-suc', codigo_comodin: '12345', id_producto_existente: 'uuid-yerba', ajuste_stock: 5 }
+        else Sub-opción B2: Vinculación Directa Permisiva (Política C-12)
+            Admin->>UI: Selecciona "Vincular sin ajustar ahora (aceptar stock negativo)"
+            Admin->>UI: Clic en "Vincular Directo"
+            UI->>API: POST /reconciliar { accion: 'VINCULAR', id_sucursal: 'uuid-suc', codigo_comodin: '12345', id_producto_existente: 'uuid-yerba' }
+        end
+    end
+
+    Note over API,DB: FASE 3: Transacción ACID Atómica (Catálogo vs Sucursal)
+    API->>DB: BEGIN TRANSACTION
+
+    alt Si la acción es 'CREAR'
+        Note over API: stock_inicial_calculado = stock_fisico_actual (10) + vendidos (3) = 13
+        API->>DB: INSERT INTO producto_global (id, nombre, id_categoria, unidad_medida, es_pesable) VALUES (gen_random_uuid(), 'Yerba...', 'cat-1', 'UNIDAD', false) RETURNING id
+        DB-->>API: Retorna 'uuid-nuevo'
+        API->>DB: INSERT INTO codigo_barra (codigo, id_producto, tipo, activo) VALUES ('12345', 'uuid-nuevo', 'PRINCIPAL', true)
+        API->>DB: INSERT INTO producto_sucursal (id_sucursal, id_producto, stock_fisico, stock_reservado, precio_minorista, version) VALUES ('uuid-suc', 'uuid-nuevo', 13, 0, 1200, 1)
+    else Si la acción es 'VINCULAR' (Sub-opción B1: con ajuste)
+        API->>DB: UPDATE producto_sucursal SET stock_fisico = 5, version = version + 1 WHERE id_producto = 'uuid-yerba' AND id_sucursal = 'uuid-suc'
+        API->>DB: INSERT INTO auditoria (id_usuario, tabla_afectada, id_registro_afectado, accion, motivo, valor_anterior, valor_nuevo, fecha) VALUES (:admin_id, 'PRODUCTO_SUCURSAL', 'uuid-yerba', 'AJUSTE_STOCK', 'Ajuste manual previo a reconciliación', '{"stock": 2, "id_sucursal": "uuid-suc"}', '{"stock": 5}', NOW())
+    else Si la acción es 'VINCULAR' (Sub-opción B2: directa permisiva sin ajuste)
+        Note over API: Política C-12: Permite que el stock resultante quede negativo (-1) sin bloquear
+        API->>DB: INSERT INTO auditoria (id_usuario, tabla_afectada, id_registro_afectado, accion, motivo, valor_anterior, valor_nuevo, fecha) VALUES (:admin_id, 'PRODUCTO_SUCURSAL', 'uuid-yerba', 'DESCUADRE_STOCK_RECONCILIACION', 'Vinculación directa de comodín con stock insuficiente (2 - 3 = -1)', '{"stock_previo": 2, "id_sucursal": "uuid-suc"}', '{"stock_proyectado": -1}', NOW())
+    end
+
+    Note over API,DB: Mapeo de Identificador y Deducción de Stock en Sucursal
+    API->>DB: UPDATE venta_detalle SET id_producto = :UUID_DESTINO WHERE codigo_comodin = '12345' AND id_venta IN (SELECT id FROM venta WHERE id_sucursal = 'uuid-suc')
+
+    loop Evaluación de Discrepancias de Precio por Renglón (C-21)
+        API->>API: Calcula: diferencia_total = (precio_cobrado - precio_oficial) * cantidad
+        opt Si diferencia_total != 0
+            API->>DB: INSERT INTO auditoria (id_usuario, tabla_afectada, id_registro_afectado, accion, motivo, valor_anterior, valor_nuevo, fecha) VALUES (:admin_id, 'VENTA_DETALLE', :id_renglon, 'RECONCILIACION_DISCREPANCIA', 'Discrepancia detectada en venta comodín', :snapshot_cobrado_con_turno_y_sucursal, :analisis_merma_multiplicada_por_cantidad, NOW())
+        end
+    end
+
+    Note over API,DB: Consolidación Neta por Turno de Caja (RF-13 y Escenario 6)
+    API->>DB: INSERT INTO auditoria (id_usuario, tabla_afectada, id_registro_afectado, accion, motivo, valor_anterior, valor_nuevo, fecha) VALUES (:admin_id, 'TURNO_CAJA', :id_turno, 'RECONCILIACION_DISCREPANCIA_TURNO', 'Balance neto consolidado de discrepancias en turno', :ref_turno, :balance_neto_turno, NOW())
+
+    Note over API,DB: Deducción de Unidades Vendidas en Góndola
+    API->>DB: UPDATE producto_sucursal SET stock_fisico = stock_fisico - 3, version = version + 1 WHERE id_producto = :UUID_DESTINO AND id_sucursal = 'uuid-suc'
+    Note over DB: Resultado final: stock_fisico queda en 10 (13 - 3 = 10, exacto al conteo físico actual en góndola)
+
+    API->>DB: COMMIT
+    DB-->>API: Transacción confirmada exitosamente
+    API-->>UI: 200 OK { status: 'RECONCILIACION_COMPLETA', id_producto: :UUID_DESTINO }
+    UI-->>Admin: Notificación de éxito: Catálogo y Stock regularizados
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Trazabilidad de Entidades Impactadas
+
+| Entidad | Campos Afectados | Justificación de Arquitectura |
+| :---- | :---- | :---- |
+| `PRODUCTO_GLOBAL` | `id`, `nombre`, `id_categoria`, `unidad_medida`, `es_pesable` | **Catálogo maestro centralizado.** No posee columnas de stock ni precios (Resolución C-17). |
+| `PRODUCTO_SUCURSAL` | `id_sucursal`, `id_producto`, `stock_fisico`, `precio_minorista`, `version` | **Inventario y precios por sucursal.** Es donde se inyecta el stock inicial y se descuentan las unidades vendidas (Resolución C-17 y C-22). |
+| `CODIGO_BARRA` | `codigo`, `id_producto`, `tipo`, `activo` | Registra el código escaneado para que en futuras ventas la búsqueda sea automática. |
+| `VENTA_DETALLE` | `id_producto` | Actualiza la FK del producto comodín al producto oficial. Conserva intactos `codigo_comodin`, `nombre_comodin` y `precio_unitario`. |
+| `AUDITORIA` | `tabla_afectada`, `accion`, `valor_anterior`, `valor_nuevo` | Asienta ajustes manuales de stock y discrepancias de precio (Merma/Sobrante lógico). |
+
+&nbsp;
+
+### 5.10 Gestión de Productos entre Sucursales — Escenario 1
+
+```mermaid
+sequenceDiagram
+
+autonumber
+
+actor A as Administrador
+participant F as Frontend (React)
+participant B as Backend (NestJS)
+participant DB as Base de Datos (PostgreSQL)
+
+A->>F: Llena Datos Base (Coca-Cola)
+A->>F: Tilda "Sucursal 1" y "Sucursal 2"
+A->>F: Define Precio S1 ($1000) y Precio S2 ($1200)
+
+Note over F: El Frontend arma un único Payload JSON
+
+F->>B: POST /productos {<br/> global: { nombre: 'Coca-Cola', id_categoria: 5 },<br/> sucursales: [<br/>  { id_suc_fk: 1, precio: 1000, stock: 50 },<br/>  { id_suc_fk: 2, precio: 1200, stock: 0 }<br/> ]<br/>}
+
+Note over B, DB: TRANSACCIÓN ATÓMICA DE CREACIÓN
+
+B->>DB: BEGIN TRANSACTION;
+B->>DB: 1. INSERT INTO PRODUCTO_GLOBAL (nombre, id_categoria) <br/> VALUES ('Coca-Cola', 5) RETURNING id;
+DB-->>B: Retorna UUID generado (ej: 'uuid-999')
+
+Note over B, DB: El Backend itera el array de sucursales
+
+B->>DB: 2. INSERT INTO PRODUCTO_SUCURSAL (id_sucursal, id_producto, precio_minorista, stock_fisico) <br/> VALUES (1, 'uuid-999', 1000, 50);
+B->>DB: 3. INSERT INTO PRODUCTO_SUCURSAL (id_sucursal, id_producto, precio_minorista, stock_fisico) <br/> VALUES (2, 'uuid-999', 1200, 0);
+B->>DB: COMMIT;
+
+DB-->>B: OK
+B-->>F: 201 Created
+```
+
+&nbsp;
+
+### 5.11 Gestión de Productos entre Sucursales — Escenario 2
+
+```mermaid
+sequenceDiagram
+
+autonumber
+
+actor A as Administrador
+participant F as Frontend (React)
+participant B as Backend (NestJS)
+participant DB as Base de Datos (PostgreSQL)
+
+Note over A, F: Vista "Asignación Masiva a Sucursal 2"
+
+A->>F: Selecciona 8 productos de la grilla
+A->>F: Elige "Heredar Precios de Sucursal 1" y Stock "0"
+A->>F: Clic en "Asignar Productos"
+
+Note over F: Payload: Array de Asignaciones
+
+F->>B: POST /sucursales/2/productos-masivos {<br/> items: [<br/>  { id_producto: 'uuid-1', precio: 1500, stock: 0 },<br/>  { id_producto: 'uuid-2', precio: 2000, stock: 0 }<br/>  // ... 6 más<br/> ]<br/>}
+
+Note over B, DB: TRANSACCIÓN ATÓMICA MASIVA (Bulk Insert)
+
+B->>DB: BEGIN TRANSACTION;
+
+Note over B, DB: Para optimizar rendimiento, se usa un solo INSERT múltiple
+
+B->>DB: INSERT INTO PRODUCTO_SUCURSAL <br/> (id_sucursal, id_producto, precio_minorista, stock_fisico) VALUES <br/> (2, 'uuid-1', 1500, 0),<br/> (2, 'uuid-2', 2000, 0),<br/> ... ;
+
+B->>DB: COMMIT;
+
+DB-->>B: OK (8 Rows affected)
+B-->>F: 200 OK (Asignación Exitosa)
+F-->>A: Muestra mensaje de éxito y vacía grilla
+```
+
+&nbsp;
+
+### 5.12 Transferencia de Stock entre Sucursales con Handshake Online Dual
+
+# Diagrama de Secuencia: Transferencia de Stock entre Sucursales con Handshake de Conectividad Dual
+
+Este diagrama modela el flujo logístico y transaccional para la transferencia de mercadería entre sucursales, implementando el patrón *Two-Phase Commit* (2PC) a nivel de negocio y exigiendo la **precondición de conectividad dual activa** (Handshake Obligatorio) para prevenir mercadería en tránsito hacia o desde sucursales desconectadas (Resolución C-24, ERS RF-16 y Escenario 8).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as Administrador Global (Web)
+    participant N as Nube Central (PostgreSQL)
+    participant BDA as BD Local Sucursal A (Origen)
+    actor SA as Operario / Encargado (Suc. A)
+    participant BDB as BD Local Sucursal B (Destino)
+    actor SB as Operario / Encargado (Suc. B)
+
+    rect rgb(253, 245, 230)
+    Note over Admin,N: FASE 0: Orquestación Central y Handshake de Conectividad Dual (RF-16 / Escenario 8)
+    Admin->>N: POST /transferencias { id_sucursal_origen: 'Suc-A', id_sucursal_destino: 'Suc-B', items: [{ id_producto, cantidad: 50 }] }
+    N->>N: Verifica conectividad en tiempo real:<br/>SELECT id, en_linea FROM sucursal WHERE id IN ('Suc-A', 'Suc-B')
+    
+    alt Alguna sucursal se encuentra OFFLINE (Handshake Rechazado - Escenario 8)
+        N-->>Admin: HTTP 409 Conflict ("No se puede iniciar transferencia: Sucursal B está OFFLINE")
+        Note over Admin,N: Operación abortada. Stock intacto y sin mercadería en el limbo.
+    else Conectividad Dual Confirmada (en_linea = true en Origen y Destino)
+        N->>N: Inserta transferencia en estado 'PENDIENTE_DESPACHO'
+        N-->>Admin: HTTP 201 Created (Transferencia #TR-101 registrada)
+        N->>BDA: Notificación Push / WebSocket ("Nueva Orden de Despacho #TR-101: 50 unid. a Suc. B")
+    end
+    end
+
+    rect rgb(240, 248, 255)
+    Note over N,SA: FASE 1: Armado Físico y Despacho en Sucursal Origen
+    BDA-->>SA: UI Alerta en terminal: "Preparar 50 unidades para transferir a Sucursal B"
+    SA->>SA: Separa y embala la mercadería física en depósito
+    SA->>BDA: Confirma despacho de bultos
+    BDA->>BDA: Transacción Local: UPDATE producto_sucursal SET stock_fisico = stock_fisico - 50 WHERE id_sucursal = 'Suc-A'
+    BDA->>N: Sync Push: Evento 'DESPACHO_CONFIRMADO' (id_transferencia: #TR-101)
+    N->>N: UPDATE transferencia_stock SET estado = 'EN_TRANSITO', fecha_despacho = NOW()
+    N->>BDB: Notificación Push / WebSocket ("Mercadería en camino: 50 unid. desde Suc. A")
+    end
+
+    rect rgb(255, 245, 238)
+    Note over N,SB: Interludio Logístico (Transporte / Flete)
+    BDB-->>SB: UI Alerta en terminal destino: "Recepción Pendiente: 50 unid. en camino desde Suc. A"
+    end
+
+    rect rgb(240, 255, 240)
+    Note over N,SB: FASE 2: Recepción Física y Cierre en Sucursal Destino
+    SB->>SB: Llega el transporte. Operario cuenta físicamente la mercadería recibida.
+
+    alt Recepción Conforme (50 unidades íntegras)
+        SB->>BDB: Confirma recepción completa (50 unidades)
+        BDB->>BDB: Transacción Local: UPDATE producto_sucursal SET stock_fisico = stock_fisico + 50 WHERE id_sucursal = 'Suc-B'
+        BDB->>N: Sync Push: Evento 'RECEPCION_CONFIRMADA' (estado: 'COMPLETADA', cantidad_recibida: 50)
+        N->>N: UPDATE transferencia_stock SET estado = 'COMPLETADA', fecha_recepcion = NOW()
+        N-->>Admin: Notificación Web: "Transferencia #TR-101 COMPLETADA exitosamente"
+    else Discrepancia por Faltante / Rotura (Ej: 45 unidades sanas, 5 dañadas)
+        SB->>BDB: Declara recepción parcial (45 unidades, motivo: "5 unidades dañadas en transporte")
+        BDB->>BDB: Transacción Local: UPDATE producto_sucursal SET stock_fisico = stock_fisico + 45 WHERE id_sucursal = 'Suc-B'
+        BDB->>N: Sync Push: Evento 'RECEPCION_DISCREPANCIA' (estado: 'DISCREPANCIA', cantidad_recibida: 45, faltante: 5)
+        N->>N: UPDATE transferencia_stock SET estado = 'DISCREPANCIA', fecha_recepcion = NOW()
+        N->>N: INSERT INTO auditoria (tabla_afectada, id_registro_afectado, accion, motivo, valor_anterior, valor_nuevo) VALUES ('TRANSFERENCIA_STOCK', #TR-101, 'DISCREPANCIA_TRANSFERENCIA', 'Diferencia en recepción física de transferencia', '{"despachadas": 50}', '{"recibidas": 45, "faltante": 5}')
+        N-->>Admin: Alerta urgente en Panel Web para resolución administrativa y reclamo logístico
+    end
+    end
+```
+
+&nbsp;
+
+---
+
+## Especificaciones y Reglas de Negocio (Trazabilidad PAT)
+
+### 1\. Precondición de Conectividad Dual (Handshake Obligatorio \- Resolución C-24)
+
+- **Principio Rector:** A diferencia de las ventas presenciales en mostrador (que son 100% *offline-first* para no demorar la fila de clientes), las transferencias entre sucursales involucran movimiento de activos físicos entre dos puntos geográficos distintos y son orquestadas exclusivamente por el **Administrador Global desde el Panel Web**.  
+- **Validación Previa en Nube:** El backend verifica en `SUCURSAL.en_linea` que tanto el nodo origen como el nodo destino mantengan conectividad activa mediante sus WebSockets/Heartbeats vigentes.  
+- **Rechazo Atómico (HTTP 409 Conflict):** Si la sucursal de origen o la de destino están desconectadas, el sistema rechaza la solicitud de creación con código HTTP 409 Conflict (o 503 Service Unavailable, conforme a RFC 9110, ERS RF-16 y Escenario 8). Esto indica que la solicitud choca con el estado operativo offline del nodo destino, garantizando que no existan órdenes huérfanas en el limbo ni mercadería despachada hacia locales incomunicados que no puedan recibirla.
+
+### 2\. Ciclo de Vida de la Transferencia (Máquina de 4 Estados)
+
+1. `PENDIENTE_DESPACHO`: Orden creada en la Nube y notificada a la Sucursal Origen. El stock aún reside físicamente en Origen.  
+2. `EN_TRANSITO`: El operario de Origen empaquetó y confirmó el despacho físico. El stock se descuenta en la base local de Origen (`stock_fisico = stock_fisico - cantidad`) y la mercadería viaja en el transporte.  
+3. `COMPLETADA`: El operario de Destino recibió el 100% de los bultos conformes. El stock se incrementa en la base local de Destino (`stock_fisico = stock_fisico + cantidad_recibida`).  
+4. `DISCREPANCIA`: Se detectaron diferencias físicas (rotura, extravío o robo en transporte). Destino ingresa a stock únicamente lo recibido en buen estado y el sistema genera una alerta en `AUDITORIA` para intervención del Administrador.
+
+### 3\. Reglas de Inmutabilidad Logística
+
+- **Sin Re-enrutamiento Físico:** Una vez que la transferencia pasa a `EN_TRANSITO`, no se permite re-enrutar la carga a una tercera sucursal C. Toda redistribución requiere cerrar formalmente la recepción en B y generar una nueva orden de B a C.  
+- **Deducción e Incremento Desacoplados:** El origen descuenta existencias al momento fáctico del despacho; el destino suma existencias únicamente al momento fáctico de la recepción y conteo en depósito, impidiendo duplicidad o stocks fantasmas durante el trayecto.
+
+### 5.13 Recepción de Mercadería y Diccionario de Proveedores
+
+# Diagrama de Secuencia: Módulo de Recepción de Mercadería y Control de Proveedores
+
+Este diagrama detalla la interacción entre el Cajero/Operario, la Interfaz de Usuario, el Motor de Diccionario de Proveedores y la Persistencia Local/Cloud, formalizando las transiciones de estado de la recepción (`BORRADOR → EN_REVISION → CONFIRMADA`), el aprendizaje automático de alias y el registro de discrepancias con el enum tipado `EstadoDiscrepanciaItem`, en estricta subsanación de los hallazgos **O-12** y **O-17**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Cajero / Operario
+    participant UI as Interfaz de Recepción
+    participant D as Diccionario Proveedor (Local)
+    participant BDL as BD Local (SQLite WatermelonDB)
+    participant N as Nube Central (PostgreSQL)
+
+    C->>UI: Ingresa comprobante de proveedor (Excel / Carga Manual / Remito)
+    UI->>BDL: INSERT INTO recepcion_mercaderia (estado: 'BORRADOR')
+    
+    C->>UI: Inicia proceso de verificación y conteo físico
+    UI->>BDL: UPDATE recepcion_mercaderia SET estado = 'EN_REVISION'
+
+    loop Para cada renglón de la Factura / Remito
+        UI->>D: Busca coincidencia con "nombre_en_factura"
+        
+        alt Producto Mapeado Encontrado
+            D-->>UI: Retorna id_producto interno
+        else Producto Nuevo / No Mapeado
+            D-->>UI: NULL (Sin coincidencia)
+            UI->>C: Solicita vincular con producto existente del catálogo
+            C->>UI: Selecciona el producto real del local ('uuid-prod')
+            UI->>D: Registra nuevo alias en DICCIONARIO_PROVEEDOR
+            Note over UI,D: Aprendizaje Automático: Próximas facturas se mapearán automáticamente
+        end
+
+        UI->>UI: Compara Precio Costo Actual vs. Precio Facturado
+        alt El costo aumentó / cambió
+            UI->>C: Alerta: "Variación de costo detectada. Precio sugerido calculado para mantener margen"
+            C->>UI: Confirma o ajusta flag aplicar_precio_sugerido
+        end
+
+        UI->>UI: Compara cantidad_declarada vs. cantidad_recibida (conteo físico)
+        alt Discrepancia de cantidad o calidad
+            UI->>C: Clasifica renglón con EstadoDiscrepanciaItem:<br/>'CONFORME' | 'FALTANTE' | 'SOBRANTE' | 'RECHAZADO_CALIDAD'
+            C->>UI: Ingresa motivo de observación y cantidad real aceptada
+        end
+        
+        UI->>BDL: INSERT INTO recepcion_mercaderia_detalle (cantidad_declarada, cantidad_recibida, estado_discrepancia, ...)
+    end
+
+    C->>UI: Clic en "Confirmar Recepción de Mercadería"
+    UI->>BDL: BEGIN TRANSACTION (SQLite)
+    UI->>BDL: 1. UPDATE recepcion_mercaderia SET estado = 'CONFIRMADA', fecha_completado = NOW()
+    UI->>BDL: 2. UPDATE producto_sucursal SET stock_fisico = stock_fisico + cantidad_recibida, precio_costo = nuevo_costo
+    opt Si aplicar_precio_sugerido = true
+        UI->>BDL: 3. UPDATE producto_sucursal SET precio_minorista = precio_venta_sugerido
+        UI->>BDL: 4. INSERT INTO auditoria ('CAMBIO_PRECIO_POR_RECEPCION')
+    end
+    UI->>BDL: COMMIT TRANSACTION
+    BDL-->>UI: Mercadería asentada localmente en stock y precios actualizados en mostrador
+
+    Note over BDL,N: Sincronización Asíncrona (Background Sync)
+    BDL->>N: Sincroniza remito confirmado, movimientos de stock, auditoría y nuevo diccionario
+    N-->>BDL: 200 OK
+```
+
+&nbsp;
+
+## Reglas de Transición y Trazabilidad
+
+1. **Ciclo de Estados Formal (O-17):** La recepción inicia en `BORRADOR` al pre-cargar o abrir el comprobante. Al comenzar la revisión física de bultos transiciona a `EN_REVISION`. Al confirmarse el ingreso pasa a `CONFIRMADA` (impactando stock exclusivamente por `cantidad_recibida`), o a `RECHAZADA` si la carga se devuelve íntegramente al transportista sin modificar existencias.  
+2. **Enum de Discrepancias Tipado:** Cada renglón de `RECEPCION_MERCADERIA_DETALLE` se tipa estrictamente mediante `EstadoDiscrepanciaItem`:  
+   - `CONFORME`: Cantidad recibida idéntica a lo declarado y en óptimo estado.  
+   - `FALTANTE`: Se recibieron menos unidades que las facturadas.  
+   - `SOBRANTE`: Llegaron más unidades que las declaradas.  
+   - `RECHAZADO_CALIDAD`: Mercadería dañada, vencida o en mal estado rechazada al transportista (no ingresa al inventario vendible).
+
+### 5.14 Modificación de Precios con Registro Forense de Auditoría Atómica
+
+sequenceDiagram autonumber actor Admin as Administrador participant UI as Frontend (React / Web Panel) participant Controller as Backend API (NestJS Controller) participant Interceptor as AuditContextInterceptor participant Service as ProductosService participant DB as PostgreSQL (Transaccional) participant Auditoria as Tabla AUDITORIA
+
+```
+Admin->>UI: Modifica precio de producto ($1.200 -> $1.500)
+UI->>Controller: PUT /api/productos/uuid-123<br/>{ precio_minorista: 1500, version: 1, motivo: "Aumento por inflación" }
+
+Controller->>Interceptor: Intercepta petición HTTP
+note over Interceptor: Extrae metadatos forenses del contexto HTTP:<br/>id_usuario (JWT), IP origen, ruta y motivo.<br/>Inyecta auditContext en la ejecución.
+Interceptor->>Service: Invoca actualizarProducto(uuid-123, dto, auditContext)
+
+note over Service, DB: FASE 1: Apertura de Transacción ACID Unificada
+Service->>DB: BEGIN TRANSACTION
+
+Service->>DB: SELECT * FROM productos_sucursal WHERE id_producto = 'uuid-123' FOR UPDATE
+DB-->>Service: Retorna ESTADO ACTUAL { precio_minorista: 1200, version: 1 }
+note over Service: Captura valor_anterior fiel desde la base de datos
+
+note over Service, DB: FASE 2: Mutación con Control de Concurrencia Optimista (OCC)
+Service->>DB: UPDATE productos_sucursal<br/>SET precio_minorista = 1500, version = version + 1, updated_at = NOW()<br/>WHERE id_producto = 'uuid-123' AND version = 1
+
+alt [OCC Conflicto: 0 filas afectadas (Modificación concurrente por otro usuario)]
+    DB-->>Service: Rows affected: 0
+    Service->>DB: ROLLBACK TRANSACTION
+    Service-->>Controller: Lanza ConflictException("El registro fue modificado por otro usuario")
+    Controller-->>UI: HTTP 409 Conflict { error: "OCC_CONFLICT", current_version: 2 }
+    UI-->>Admin: Muestra alerta: "Conflicto de edición. Recargando datos actualizados..."
+else [OCC Exitoso: 1 fila afectada]
+    DB-->>Service: Rows affected: 1 (OK)
+    note over Service: Construye snapshot real de valor_nuevo: { precio_minorista: 1500, version: 2 }
+
+    note over Service, Auditoria: FASE 3: Registro Forense Atómico (Misma Transacción)
+    Service->>DB: INSERT INTO auditoria (id, id_usuario, tabla_afectada, id_registro_afectado, accion, valor_anterior, valor_nuevo, motivo, fecha)<br/>VALUES (UUIDv4(), Admin.id, 'PRODUCTO_SUCURSAL', 'uuid-123', 'MODIFICACION', '{"precio_minorista":1200,"version":1}', '{"precio_minorista":1500,"version":2}', 'Aumento por inflación', NOW())
+
+    alt [Falla en persistencia de auditoría (Falla de disco / Violación)]
+        DB-->>Service: Error SQL en tabla AUDITORIA
+        Service->>DB: ROLLBACK TRANSACTION (Garantía RF-19: sin auditoría no hay mutación)
+        Service-->>Controller: Lanza InternalServerErrorException("Fallo en registro de auditoría atómica")
+        Controller-->>UI: HTTP 500 Internal Server Error
+        UI-->>Admin: Notifica error del sistema (la mutación no se aplicó)
+    else [Auditoría persistida exitosamente]
+        DB-->>Service: INSERT OK (1 fila)
+        Service->>DB: COMMIT TRANSACTION
+        Service-->>Controller: Retorna entidad actualizada { id: 'uuid-123', precio_minorista: 1500, version: 2 }
+        Controller-->>UI: HTTP 200 OK (Producto actualizado con trazabilidad forense atómica)
+        UI-->>Admin: Muestra notificación de éxito y actualiza UI a Versión 2
+    end
+end
+```
+
+&nbsp;
+
+### 5.15 Control de Concurrencia Optimista (OCC 409\) para Modificaciones
+
+sequenceDiagram
+
+autonumber
+
+actor A as Admin A (Corrientes)
+
+actor B as Admin B (Resistencia)
+
+participant API as Backend (NestJS)
+
+participant DB as PostgreSQL (Nube)
+
+note over A, DB: Ambos leen el mismo producto casi al mismo tiempo
+
+A-\>\>API: GET /productos/123
+
+API-\>\>DB: SELECT \* FROM productos WHERE id=123
+
+DB--\>\>API: Retorna { precio: 1000, version: 1 }
+
+API--\>\>A: Muestra UI (Versión 1\)
+
+B-\>\>API: GET /productos/123
+
+API-\>\>DB: SELECT \* FROM productos WHERE id=123
+
+DB--\>\>API: Retorna { precio: 1000, version: 1 }
+
+API--\>\>B: Muestra UI (Versión 1\)
+
+note over A, DB: Admin A guarda sus cambios primero
+
+A-\>\>A: Modifica precio a 1200
+
+A-\>\>API: PUT /productos/123 { precio: 1200, version: 1 }
+
+API-\>\>DB: UPDATE productos SET precio=1200, version=version+1 WHERE id=123 AND version=1
+
+DB--\>\>API: Rows affected: 1 (¡Éxito\!)
+
+API--\>\>A: 200 OK \- Guardado Correctamente
+
+note over B, DB: Admin B intenta guardar sobre datos obsoletos
+
+B-\>\>B: Modifica precio a 1500
+
+B-\>\>API: PUT /productos/123 { precio: 1500, version: 1 }
+
+API-\>\>DB: UPDATE productos SET precio=1500, version=version+1 WHERE id=123 AND version=1
+
+DB--\>\>API: Rows affected: 0 (No encontró version=1)
+
+API-\>\>API: Detecta colisión (Rows \== 0\)
+
+API--\>\>B: 409 Conflict \- "El producto fue modificado por otro usuario"
+
+B-\>\>API: GET /productos/123 (Recarga los datos)
+
+API--\>\>B: Retorna nuevo estado { precio: 1200, version: 2 }
+
+### 5.16 Resolución de Conflictos OCC con Merge Aditivo
+
+# Diagrama de Secuencia: Resolución de Conflicto OCC con Merge Aditivo
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama especifica la mecánica de resolución de colisiones concurrentes (OCC \- Optimistic Concurrency Control) cuando una terminal offline sincroniza ventas a fiado o abonos que impactan en la cuenta corriente de un cliente, cuya versión en la nube ha sido modificada remotamente durante el periodo de desconexión.
+
+Garantiza:
+
+1. **Principio de No Pérdida de Asientos (Merge Aditivo):** El backend en la nube **jamás pisa** el saldo central con el saldo absoluto local. En su lugar, aplica el delta neto ($\Delta = \text{delta\_monto}$) sobre el saldo vivo actual de la nube.  
+2. **Aislamiento Pesimista durante el Merge:** Ante colisión (`rowsAffected == 0`), el servidor toma un bloqueo de fila con `SELECT ... FOR UPDATE` en PostgreSQL para consolidar el merge aditivo de forma estrictamente serializable.  
+3. **Prioridad de la Venta Presencial y Trazabilidad Forense:** Si el saldo acumulado tras el merge supera el límite de crédito vigente en la nube, la venta presencial consumada no se cancela, registrándose automáticamente un evento en `AUDITORIA` (`RESOLUCION_MERGE_OCC` / `EXCESO_LIMITE_CREDITO_POST_SYNC`) para revisión administrativa.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant POS_Off as Terminal POS (Offline Push)
+    participant SyncAPI as SyncService (NestJS Cloud)
+    participant CloudDB as PostgreSQL Cloud
+    participant Auditoria as AUDITORIA
+
+    Note over POS_Off,CloudDB: Sincronización de mutación de cliente con versión local desactualizada (OCC)
+    POS_Off->>SyncAPI: POST /sync/push-deltas { changes: { clientes: [{ id: uuid_cli, delta_saldo: +10000, version: 2 }] } }
+    
+    SyncAPI->>CloudDB: BEGIN TRANSACTION (PostgreSQL)
+    
+    Note over SyncAPI,CloudDB: 1. Intento de actualización directa con versión esperada (OCC Estándar)
+    SyncAPI->>CloudDB: UPDATE cliente SET<br/>  saldo_deudor = saldo_deudor + 10000,<br/>  version = version + 1,<br/>  updated_at = NOW()<br/>WHERE id = uuid_cli AND version = 2;
+    CloudDB-->>SyncAPI: Rows affected = 0 (Colisión OCC: la versión remota ya es 3 por abono en otra caja)
+
+    rect rgb(255, 245, 235)
+        Note over SyncAPI,CloudDB: 2. RESOLUCIÓN DE COLISIÓN OCC (MERGE ADITIVO CON BLOQUEO PESIMISTA)
+        SyncAPI->>CloudDB: SELECT id, saldo_deudor, limite_credito, version FROM cliente WHERE id = uuid_cli FOR UPDATE;
+        CloudDB-->>SyncAPI: Retorna { saldo_deudor: 0.00 (abono remoto extinguió deuda), limite: 15000.00, version: 3 }
+
+        Note over SyncAPI: Calcula nuevo saldo sumando el delta aditivo (+10000) sobre saldo actual (0.00):<br/>nuevo_saldo = 0.00 + 10000.00 = 10000.00
+        SyncAPI->>CloudDB: UPDATE cliente SET<br/>  saldo_deudor = saldo_deudor + 10000,<br/>  version = version + 1,<br/>  updated_at = NOW()<br/>WHERE id = uuid_cli;
+
+        Note over SyncAPI,Auditoria: 3. Asiento de Trazabilidad y Alerta de Sobregiro
+        SyncAPI->>Auditoria: INSERT INTO auditoria (<br/>  id, id_usuario, tabla_afectada, accion, valor_anterior, valor_nuevo, motivo, fecha<br/>) VALUES (<br/>  uuid_auditoria, '00000000-0000-0000-0000-000000000001', 'CLIENTE', 'RESOLUCION_MERGE_OCC',<br/>  '{"saldo_cloud_previo":0,"version":3}',<br/>  '{"delta_aplicado":10000,"nuevo_saldo":10000,"limite":15000}',<br/>  'Merge aditivo offline aplicado exitosamente sin pisar mutaciones remotas', NOW()<br/>);
+        CloudDB-->>SyncAPI: Registro asentado
+    end
+
+    SyncAPI->>CloudDB: COMMIT;
+    SyncAPI-->>POS_Off: HTTP 200 OK { nuevo_cursor: 2048, status: 'MERGED' }
+```
+
+&nbsp;
+
+---
+
+## 3\. Puntos Clave de Control Arquitectónico
+
+- **Preservación Incondicional del Libro Mayor:** Dado que los asientos en `CUENTA_CORRIENTE` son inmutables (`VENTA_CREDITO` con monto positivo y `ABONO` con monto negativo), el merge aditivo garantiza que la suma de movimientos de la cuenta corriente siempre coincida exactamente con `CLIENTE.saldo_deudor`.  
+- **Inmunidad ante Desconexiones Prolongadas:** Si una sucursal pasa varios días offline y procesa múltiples ventas fiadas a clientes habituales, cada venta aporta su delta aditivo ${\Delta }_{i}$ al sincronizar, evitando que los abonos cobrados en otras sucursales se sobreescriban destructivamente.
+
+---
+
+## 4\. Código y Lógica SQL de Referencia (`SyncService`)
+
+```ts
+// Fragmento transaccional de resolución aditiva en SyncService.procesarPushDeltas
+if (res[1] === 0) {
+  this.logger.warn(`Conflicto OCC en cliente ${cli.id}. Aplicando merge aditivo auditado.`);
+
+  // Bloqueo pesimista para lectura y cálculo atómico
+  const clienteCloud = await queryRunner.manager.query(
+    `SELECT id, saldo_deudor, limite_credito, version FROM cliente WHERE id = $1 FOR UPDATE`,
+    [cli.id]
+  );
+
+  if (clienteCloud.length > 0) {
+    const saldoActualCloud = Number(clienteCloud[0].saldo_deudor);
+    const limite = Number(clienteCloud[0].limite_credito);
+    const deltaMonto = Number(cli.delta_saldo ?? (cli.saldo_deudor - (cli.saldo_anterior ?? 0)));
+    const nuevoSaldoCalculado = saldoActualCloud + deltaMonto;
+
+    // Mutación aditiva acumulativa: nunca pisa el saldo central
+    await queryRunner.manager.query(
+      `UPDATE cliente 
+       SET saldo_deudor = saldo_deudor + $1, version = version + 1, updated_at = NOW() 
+       WHERE id = $2`,
+      [deltaMonto, cli.id]
+    );
+
+    // Registro forense inmutable
+    await queryRunner.manager.query(
+      `INSERT INTO auditoria (id, id_usuario, tabla_afectada, accion, valor_anterior, valor_nuevo, motivo, fecha)
+       VALUES ($1, $2, 'CLIENTE', 'RESOLUCION_MERGE_OCC', $3, $4, $5, NOW())`,
+      [
+        crypto.randomUUID(),
+        this.SYSTEM_BOT_UUID,
+        JSON.stringify({ saldo_cloud_previo: saldoActualCloud, version_cloud: clienteCloud[0].version }),
+        JSON.stringify({ delta_aplicado: deltaMonto, nuevo_saldo: nuevoSaldoCalculado, limite_credito: limite }),
+        nuevoSaldoCalculado > limite
+          ? `Merge aditivo offline excedió límite de crédito vigente ($${nuevoSaldoCalculado} > $${limite})`
+          : 'Merge aditivo OCC aplicado exitosamente sin pisar mutaciones remotas',
+      ]
+    );
+  }
+}
+```
+
+&nbsp;
+
+### 5.17 Transición Atómica a CONFIRMADA con Fijación de Turno de Caja
+
+# Diagrama de Secuencia: Transición Atómica a CONFIRMADA con Fijación de Turno
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama documenta la transición crítica de una venta desde el estado `BORRADOR` (carrito activo en memoria / persistido localmente) al estado `CONFIRMADA` en la terminal POS.
+
+Garantiza:
+
+1. **Fijación Inmutable de Turno (`id_turno_caja`):** Se asocia la venta al turno de caja abierto del operador que procesa el cobro, satisfaciendo el Arqueo Ciego de Caja (**RF-17**) y la Auditoría de Mermas/Sobrantes (**RF-13**).  
+2. **Atomicidad Local (ACID):** En un único bloque transaccional (`BEGIN TRANSACTION ... COMMIT`) en SQLite local (WatermelonDB), se fija el estado de la venta, se decrementa tanto el `stock_fisico` como el `stock_reservado` en góndola (*Soft Allocation Release*), y se registran los renglones de `PAGO_VENTA`.  
+3. **Sincronización Asíncrona (Local-First):** Una vez commiteada la transacción local, el worker en segundo plano detecta el cambio (`estado_general = 'CONFIRMADA'`) y envía el delta a la nube (NestJS / PostgreSQL).
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Cajero / Operador
+    participant UI as Terminal POS (Desktop UI)
+    participant BDL as SQLite Local (WatermelonDB)
+    participant SYNC as Worker Push Delta (Background)
+    participant API as Backend Cloud (NestJS / PostgreSQL)
+
+    Note over C,UI: Carrito activo con estado_general = 'BORRADOR'
+    C->>UI: Clic en "Procesar Cobro" / "Finalizar Venta"
+    
+    UI->>BDL: SELECT id FROM turno_caja WHERE id_usuario = :id_usuario AND estado = 'ABIERTO' LIMIT 1
+    BDL-->>UI: Retorna id_turno_caja_activo (UUID)
+    
+    alt No existe turno de caja abierto para el operador
+        UI-->>C: ERROR: Bloqueo de cobro. Debe abrir un turno de caja antes de cobrar.
+    else Turno activo validado
+        Note over UI,BDL: INICIO TRANSACCIÓN ATÓMICA LOCAL (ACID)
+        UI->>BDL: BEGIN TRANSACTION;
+
+        Note over BDL: 1. Fijar venta y asociar turno activo de forma inmutable
+        UI->>BDL: UPDATE venta SET<br/>  estado_general = 'CONFIRMADA',<br/>  id_turno_caja = :id_turno_caja_activo,<br/>  version = version + 1,<br/>  updated_at = CURRENT_TIMESTAMP<br/>WHERE id = :id_venta AND estado_general = 'BORRADOR';
+
+        Note over BDL: 2. Liberar reserva y descontar inventario físico
+        loop Por cada ítem en VENTA_DETALLE
+            UI->>BDL: UPDATE producto_sucursal SET<br/>  stock_reservado = stock_reservado - :cantidad,<br/>  stock_fisico = stock_fisico - :cantidad,<br/>  version = version + 1<br/>WHERE id_producto = :id_producto AND id_sucursal = :id_sucursal;
+        end
+
+        Note over BDL: 3. Registrar desglose de métodos de pago
+        loop Por cada método de pago utilizado
+            UI->>BDL: INSERT INTO pago_venta (id, id_venta, id_metodo_pago, monto)<br/>VALUES (:uuid_pago, :id_venta, :id_metodo_pago, :monto_pagado);
+        end
+
+        UI->>BDL: COMMIT;
+        Note over UI,BDL: FIN TRANSACCIÓN ATÓMICA LOCAL
+
+        UI-->>C: Emisión de Ticket de Venta y confirmación visual
+        
+        Note over UI,SYNC: Sincronización Asíncrona hacia la Nube
+        SYNC->>BDL: Escaneo por cursor (registros con updated_at > cursor AND estado_general != 'BORRADOR')
+        BDL-->>SYNC: Retorna registro VENTA confirmada + PAGO_VENTA
+        SYNC->>API: POST /sync/push-deltas (Payload comprimido con id_turno_caja)
+        API-->>SYNC: HTTP 200 OK (Nuevo cursor confirmado)
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Puntos Clave de Control Arquitectónico
+
+- **Resiliencia ante Cortes de Energía:** SQLite configurado con `journal_mode = WAL` y `synchronous = FULL`. Si la energía se corta antes del `COMMIT`, la venta permanece en `BORRADOR` con su reserva activa. Si se corta después, la venta queda confirmada con su `id_turno_caja` intacto.  
+- **Desacoplamiento de Turnos en Operaciones Posteriores:** Las eventuales notas de crédito posteriores vincularán el `id_venta` original para conocer precios históricos, pero impactarán en el `TURNO_CAJA` activo del día de la devolución, sin mutar el `id_turno_caja` fijado en esta venta.
+
+### 5.18 Proceso de Garbage Collection y Expiración con Protección de Reloj
+
+# Diagrama de Secuencia: Proceso de Garbage Collection y Expiración de Carritos
+
+## 1\. Propósito Arquitectónico
+
+Este diagrama formaliza el mecanismo de limpieza automática de carritos abandonados (*Garbage Collection*) en la arquitectura Local-First de POSLyon, resolviendo de forma conjunta los hallazgos **C-13** y **C-14**.
+
+Garantiza:
+
+1. **Configuración Dinámica del TTL (Resolución C-13):** El tiempo de vida de la reserva se calcula dinámicamente mediante `CONFIGURACION_SUCURSAL.reglas_negocio.ttl_carrito_minutos` (ej. 30 minutos) descargado en la sucursal, eliminando cualquier referencia errónea a la hora de actualización diferida de precios.  
+2. **Alcance Universal sobre Estados en Borrador (Resolución C-14):** La expiración aplica universalmente a toda venta en `estado_general = 'BORRADOR'`, sin importar si su `estado_logistico` es `A_PREPARAR`, `PREPARANDO`, `CONTROLANDO`, `INCOMPLETO` o `LISTO_PARA_COBRAR`.  
+3. **Mecanismo de Ventana Deslizante (*Sliding Window*):** Cada interacción activa (escaneo, modificación de cantidad o avance en preparación guiada) refresca la `fecha_expiracion_reserva`. Solo los carritos efectivamente inactivos alcanzan el umbral de purga.  
+4. **Protección de Reloj (Clock Skew / NTP):** La evaluación temporal neutraliza manipulaciones o desfases del reloj del sistema operativo local utilizando el delta sincronizado con el servidor NTP / backend central (ERS RF-02 Escenario 10).  
+5. **Atomicidad y Reversión Incondicional:** La transición a `CANCELADA` revierte en una única transacción SQL en SQLite el `stock_reservado` en `PRODUCTO_SUCURSAL`, liberando de inmediato la mercadería para otros carritos.
+
+---
+
+## 2\. Diagrama de Secuencia (Mermaid.js)
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    actor C as Cajero / Embalador
+    participant UI as Terminal (Mostrador / Móvil)
+    participant GC as Worker GC Local (Background)
+    participant NTP as Servicio de Tiempo (NTP / Offset)
+    participant BDL as BD Local (SQLite / WatermelonDB)
+    participant WS as Servidor WebSocket LAN
+
+    rect rgb(240, 248, 255)
+    note over C, BDL: Flujo 1: Mutación Activa y Ventana Deslizante (Sliding Window)
+    C->>UI: Escanea producto / Modifica ítem en carrito activo
+    UI->>BDL: Lee ttl_carrito_minutos desde CONFIGURACION_SUCURSAL (ej. 30 min)
+    UI->>NTP: Obtiene hora confiable actual (now + offset_servidor)
+    UI->>UI: Calcula fecha_expiracion_reserva = now_confiable + (ttl_minutos * 60 * 1000)
+    UI->>BDL: BEGIN TRANSACTION
+    UI->>BDL: INSERT/UPDATE VENTA_DETALLE
+    UI->>BDL: UPDATE PRODUCTO_SUCURSAL SET stock_reservado = stock_reservado + cant
+    UI->>BDL: UPDATE VENTA SET fecha_expiracion_reserva = :nueva_fecha, updated_at = :now WHERE id = :id_venta
+    UI->>BDL: COMMIT
+    BDL-->>UI: Carrito actualizado con reserva extendida
+    end
+
+    rect rgb(255, 245, 238)
+    note over GC, WS: Flujo 2: Bucle Periódico de Garbage Collection (Cada N minutos)
+    loop Intervalo Periódico de Limpieza (ej. cada 60 segundos)
+        GC->>NTP: Consulta hora confiable actual (evita manipulación de reloj OS)
+        NTP-->>GC: Timestamp confiable T_actual
+        GC->>BDL: SELECT id, id_sucursal FROM VENTA WHERE estado_general = 'BORRADOR' AND fecha_expiracion_reserva < :T_actual
+        
+        alt Existen Carritos Expirados por Inactividad
+            loop Para cada carrito expirado
+                GC->>BDL: BEGIN TRANSACTION
+                GC->>BDL: SELECT id_producto, cantidad FROM VENTA_DETALLE WHERE id_venta = :id_venta
+                GC->>BDL: UPDATE VENTA SET estado_general = 'CANCELADA', updated_at = :T_actual WHERE id = :id_venta AND estado_general = 'BORRADOR'
+                loop Para cada detalle del carrito
+                    GC->>BDL: UPDATE PRODUCTO_SUCURSAL SET stock_reservado = stock_reservado - :cantidad WHERE id_producto = :id_producto AND id_sucursal = :id_sucursal
+                end
+                GC->>BDL: COMMIT
+                GC->>WS: Emite evento LAN "CARRITO_EXPIRADO" { id_venta }
+                WS-->>UI: Push: Desaloja pedido expirado y notifica en pantalla
+            end
+        else Sin Carritos Expirados
+            GC->>GC: Espera al siguiente ciclo sin realizar escrituras
+        end
+    end
+    end
+
+    rect rgb(255, 235, 235)
+    note over C, UI: Flujo 3: Intento de Operación sobre Carrito Expirado
+    C->>UI: Cajero o cliente intenta cobrar un carrito que ya expiró en background
+    UI->>BDL: Consulta VENTA WHERE id = :id_venta
+    BDL-->>UI: Registro con estado_general = 'CANCELADA'
+    UI->>UI: Guarda de seguridad detecta estado CANCELADA
+    UI-->>C: Notificación en pantalla: "El carrito ha expirado por inactividad y su reserva fue liberada. Por favor, inicie una nueva venta."
+    end
+```
+
+&nbsp;
+
+---
+
+## 3\. Matriz de Estados de Venta y Aplicación del Garbage Collection
+
+| Estado General | Estado Logístico | ¿Aplica Garbage Collection? | Comportamiento al Expirar |
+| :---- | :---- | :---- | :---- |
+| `BORRADOR` | `A_PREPARAR` | **SÍ** | Cancela venta y libera `stock_reservado` si el cajero deja el carrito abandonado en mostrador. |
+| `BORRADOR` | `PREPARANDO` | **SÍ** | Cancela venta y libera `stock_reservado` si el preparador abandona el recorrido móvil. |
+| `BORRADOR` | `CONTROLANDO` | **SÍ** | Cancela venta y libera `stock_reservado` si se abandona la verificación física. |
+| `BORRADOR` | `INCOMPLETO` | **SÍ** | Cancela venta y libera `stock_reservado` si no se regulariza en mostrador antes del TTL. |
+| `BORRADOR` | `LISTO_PARA_COBRAR` | **SÍ** | Cancela venta y libera `stock_reservado` si el cliente no se presenta en caja a pagar. |
+| `CONFIRMADA` | Cualquiera (`ENTREGADO`) | **NO** | Inmutable. La venta fue cobrada, el `stock_fisico` fue descontado y no expira jamás. |
+| `CANCELADA` | Cualquiera | **NO** | Ya fue cancelada y su stock reservado ya fue liberado. |
+
+&nbsp;
+
+---
+
+## 📋 Capítulo 6: Diagramas de Actividad de Procesos Críticos
+
+### 6.1 Arqueo y Cierre Ciego de Caja
+
+flowchart TD
+
+```
+subgraph FASE1 ["FASE 1: Apertura de Turno"]
+    A(["Inicio de Turno"]) --> B["Cajero declara Fondo Inicial de Efectivo<br/>(monto_inicial_efectivo)"]
+    B --> C["Sistema valida monto >= 0<br/>Crea TURNO_CAJA con estado = 'ABIERTO'"]
+end
+
+subgraph FASE2 ["FASE 2: Operaciones durante el Turno (Discriminación de Medios)"]
+    C --> D{"Operación Comercial"}
+    
+    %% Entradas de efectivo físico
+    D -->|Venta Contado Efectivo| E1["Suma a VentasEfectivo<br/>(PAGO_VENTA afecta_caja_fisica = true)"]
+    D -->|Abono CC en Efectivo| E2["Suma a AbonosEfectivo<br/>(MOVIMIENTO_CAJA afecta_caja_fisica = true)"]
+    D -->|Ingreso Manual Declarado| E3["Suma a IngresosManuales<br/>(MOVIMIENTO_CAJA INGRESO)"]
+    
+    %% Egresos de efectivo físico
+    D -->|Devolución/NC en Efectivo| S1["Suma a DevolucionesEfectivo<br/>(MOVIMIENTO_CAJA EGRESO - RF-10)"]
+    D -->|Sangría / Retiro a Caja Fuerte| S2["Suma a SangriasRetiros<br/>(MOVIMIENTO_CAJA EGRESO de seguridad)"]
+    D -->|Pago a Proveedor en Efectivo| S3["Suma a PagosProveedoresEfectivo<br/>(MOVIMIENTO_CAJA EGRESO de mostrador)"]
+    
+    %% Flujos que no mueven efectivo físico
+    D -->|Cobro Digital: Tarjeta / QR / Transf.| ND1["Registra en TotalCobrosDigitales<br/>(afecta_caja_fisica = false)"]
+    D -->|Abono CC por Transferencia Bancaria| ND2["Registra en TotalCobrosDigitales<br/>(afecta_caja_fisica = false)"]
+    D -->|Venta a Fiado / Cuenta Corriente| ND3["Asienta cargo en CUENTA_CORRIENTE<br/>(No toca caja)"]
+end
+
+%% Convergencia hacia el arqueo
+E1 --> H
+E2 --> H
+E3 --> H
+S1 --> H
+S2 --> H
+S3 --> H
+ND1 --> H
+ND2 --> H
+ND3 --> H
+
+subgraph FASE3 ["FASE 3: Cierre Ciego en Mostrador (RF-17)"]
+    H["Cajero solicita Cerrar Turno"] --> CC1["UI POS activa Pantalla de Arqueo Ciego<br/>(Oculta estrictamente el Efectivo Esperado)"]
+    CC1 --> CC2["Cajero cuenta físicamente billetes y monedas en gaveta"]
+    CC2 --> CC3["Cajero ingresa y confirma 'efectivo_declarado'"]
+end
+
+subgraph FASE4 ["FASE 4: Cálculo Automatizado de Discrepancia y Cierre de Turno"]
+    CC3 --> CALC["Sistema ejecuta Fórmula Canónica en SQLite:<br/>EfectivoEsperado = monto_inicial_efectivo<br/>+ VentasEfectivo + AbonosEfectivo + IngresosManuales<br/>- DevolucionesEfectivo - SangriasRetiros - PagosProveedoresEfectivo"]
+    
+    CALC --> COMP["Sistema calcula Discrepancia:<br/>diferencia_caja = efectivo_declarado - EfectivoEsperado"]
+    
+    COMP --> PERSIST["UPDATE TURNO_CAJA SET<br/>fecha_cierre = NOW(),<br/>efectivo_declarado = declarado,<br/>diferencia_caja = diferencia,<br/>estado = 'CERRADO'"]
+    
+    PERSIST --> EVAL_DISC{"¿diferencia_caja == 0?"}
+    
+    EVAL_DISC -->|Sí| C_OK["Turno CERRADO Cuadrado<br/>(Diferencia = $0.00)"]
+    EVAL_DISC -->|No: Declarado < Esperado| C_FALT["Turno CERRADO con FALTANTE<br/>Registra evento en AUDITORIA<br/>(Alerta preventiva para administración)"]
+    EVAL_DISC -->|No: Declarado > Esperado| C_SOBR["Turno CERRADO con SOBRANTE<br/>Registra evento en AUDITORIA<br/>(Alerta preventiva para administración)"]
+    
+    C_OK --> SYNC_CLOUD["Push Sync a PostgreSQL en la Nube<br/>Genera Reporte Z consolidado"]
+    C_FALT --> SYNC_CLOUD
+    C_SOBR --> SYNC_CLOUD
+end
+
+subgraph FASE5 ["FASE 5: Rectificación Administrativa (O-16 / Auditoría Posterior)"]
+    SYNC_CLOUD --> ADM_REV{"Administrador / Dueño<br/>audita el Turno Cerrado"}
+    
+    ADM_REV -->|Sin discrepancia o aceptada| FIN_TURNO(["Turno Definitivamente Cerrado"])
+    
+    ADM_REV -->|Discrepancia justificada por error humano| RECT["Administrador asienta:<br/>1. efectivo_rectificado<br/>2. motivo_rectificacion en AUDITORIA<br/>3. id_usuario_rectifica = admin_uuid<br/>4. fecha_rectificacion = NOW()"]
+    
+    RECT --> RECT_TRANS["UPDATE TURNO_CAJA SET<br/>estado = 'RECTIFICADO',<br/>efectivo_rectificado = rectificado,<br/>id_usuario_rectifica = admin_uuid<br/>(Preserva 'efectivo_declarado' original inmutable)"]
+    
+    RECT_TRANS --> FIN_TURNO
+end
+```
+
+&nbsp;
+
+### 6.2 Resolución de Creación Offline del Artículo Comodín
+
+# Diagrama de Actividad: Resolución de Creación Offline — El "Producto Comodín"
+
+Este diagrama modela el flujo de trabajo distribuido y resiliente para la operatoria offline en el punto de venta local (Kiosco / Cajero) ante productos huérfanos o no registrados, su encolamiento y posterior sincronización hacia la Nube Central, y el proceso de reconciliación administrativa garantizando la **inmutabilidad visual y fiscal del historial de ventas**.
+
+```mermaid
+flowchart TD
+    classDef accion fill:#e1f5fe,stroke:#03a9f4,stroke-width:1px;
+    classDef auto fill:#f3e5f5,stroke:#9c27b0,stroke-width:1px;
+
+    subgraph Kiosco["Kiosco Local (Offline / Cajero)"]
+        A(["Escanea Código de Barras"]) --> B{"¿Existe en<br/>BD Local?"}
+        B -- Sí --> C["Agrega al Carrito normalmente"]
+        B -- No --> D["Alerta: 'Producto No Encontrado'"]
+        D --> E["Selecciona 'Venta Rápida / Artículo No Registrado'"]:::accion
+        E --> F["Ingresa Nombre, Precio y Código de Barras temporal"]:::accion
+        F --> G["Inserta en Carrito con:<br/>id_producto = '00000000-0000-0000...'<br/>nombre_comodin = 'Texto del Cajero'<br/>codigo_comodin = 'Código Escaneado'"]:::auto
+        G --> H["Finaliza Venta y Cobra"]
+    end
+
+    subgraph Sync["Sincronización (Background)"]
+        H --> I{"¿Hay Internet?"}
+        I -- No --> J["Espera en cola local"]
+        J --> I
+        I -- Sí --> K["Sube Venta a Nube"]
+    end
+
+    subgraph Nube["Nube Central (Administrador Global)"]
+        K --> L{"¿Contiene ítems<br/>con UUID Reservado?"}
+        L -- No --> M["Fin del proceso"]
+        L -- Sí --> N["Agrupa por Clave Canónica:<br/>COALESCE(codigo_comodin, 'SIN_CODIGO:' + nombre_comodin)"]:::auto
+        O(["Admin revisa panel diario"]) --> P["Abre lista de Códigos Huérfanos"]
+        P --> Q{"¿Acción de<br/>Reconciliación?"}:::accion
+        
+        Q -- "Opción A: Crear Oficial" --> QA["Crea Producto Oficial en Catálogo<br/>(Calcula Stock Inicial + Histórico C-18)"]:::accion
+        Q -- "Opción B: Vincular Existente" --> QB["Vincula a Catálogo Existente<br/>(Ajuste Góndola o Vía Permisiva C-19)"]:::accion
+        
+        QA --> R["Preserva intactos en VENTA_DETALLE:<br/>nombre_comodin, codigo_comodin y precio_unitario.<br/>Actualiza ÚNICAMENTE FK id_producto al nuevo UUID"]:::auto
+        QB --> R
+        
+        R --> S["Descuenta unidades vendidas en PRODUCTO_SUCURSAL<br/>y audita diferencias de precio (Mermas/Sobrantes)"]:::auto
+        S --> T["Distribuye catálogo actualizado a todas las sucursales"]:::auto
+        T --> M
+    end
+```
+
+&nbsp;
+
+---
+
+## Especificaciones y Reglas de Negocio (Trazabilidad PAT)
+
+### 1\. Inmutabilidad del Snapshot Histórico y Clave Canónica de Agrupamiento (Resoluciones C-20 y O-27)
+
+- **Principio Rector:** La tabla `VENTA_DETALLE` representa el testimonio fáctico e inmutable de una transacción comercial ya acontecida.  
+- **Preservación Estricta:** Bajo ninguna circunstancia el proceso de reconciliación ejecuta un vaciado (`SET NULL`), borrado o alteración de los atributos descriptivos ingresados por el cajero:  
+  - `nombre_comodin`: Se mantiene inalterado para preservar la descripción textual original tipeada por el cajero.  
+  - `codigo_comodin`: Se mantiene inalterado para auditoría forense del código de barras escaneado físicamente.  
+  - `precio_unitario`: Se mantiene inalterado como congelamiento de precio exacto pactado y cobrado al cliente.  
+- **Clave Canónica de Agrupamiento (Resolución O-27):** Para evitar que comodines ingresados en mostrador sin código de barras queden huérfanos e invisibles, el panel de administración agrupa mediante la clave unificada: $$\text{clave\_agrupamiento} = \text{COALESCE}(\text{codigo\_comodin}, \text{'SIN\_CODIGO:'} \mathbin{\Vert} \text{TRIM}(\text{LOWER}(\text{nombre\_comodin})))$$  
+- **Mutación Exclusiva de Clave Foránea (FK):** La única modificación autorizada en `VENTA_DETALLE` durante la reconciliación es la actualización de la FK `id_producto`:
+
+```sql
+UPDATE venta_detalle
+SET id_producto = :nuevo_id_producto_oficial
+WHERE id_producto = '00000000-0000-0000-0000-000000000000'
+  AND (
+    (:codigo_huerfano IS NOT NULL AND codigo_comodin = :codigo_huerfano)
+    OR
+    (:codigo_huerfano IS NULL AND codigo_comodin IS NULL AND TRIM(LOWER(nombre_comodin)) = TRIM(LOWER(:nombre_comodin)))
+  );
+```
+
+- **Reimpresión Idéntica de Tickets:** Esta preservación garantiza que si un cliente solicita la reimpresión o consulta de un ticket emitido hace semanas bajo la figura del comodín, el comprobante conserve el texto exacto, precio original y código impreso en su momento, sin deformar la realidad histórica.
+
+### 2\. Integración con el Módulo de Inventario (Resoluciones C-18 y C-19)
+
+- **Opción A (Creación de Producto Nuevo \- C-18):** El Administrador declara el conteo físico real en góndola (`stock_fisico_actual`). El backend calcula el stock de inserción: $$\text{stock\_inicial\_calculado} = \text{stock\_fisico\_actual} + \text{vendidos\_historicos}$$ Al consolidar la transacción, se inserta dicha cantidad en `PRODUCTO_SUCURSAL` y se restan las unidades vendidas, dejando las existencias finales exactamente iguales a lo contado en góndola.  
+- **Opción B (Vinculación a Catálogo Existente \- C-19):** Si las existencias actuales no alcanzan para cubrir lo vendido, no se bloquea la operatoria. El Administrador cuenta con doble vía de acción:  
+  - **Vía A:** Ajuste manual del estante previo a la deducción con auditoría `AJUSTE_STOCK`.  
+  - **Vía B (Permisiva \- Política C-12):** Deducción directa permitiendo stock negativo momentáneo y generando automáticamente una auditoría `DESCUADRE_STOCK_RECONCILIACION`.
+
+### 6.3 Reconciliación de Stock y Cuarentena Faltante
+
+# Diagrama de Actividad: Reconciliación de Stock y Cuarentena de Faltantes
+
+Este diagrama modela el flujo de trabajo desacoplado para la detección de productos faltantes durante la preparación de pedidos en tienda, la contención del carrito para evitar cobros erróneos, y la resolución administrativa de alertas de cuarentena distinguiendo entre **Merma Física Confirmada** y **Falsa Alarma** (Resolución C-23).
+
+```mermaid
+flowchart TD
+    classDef alerta fill:#ffcccc,stroke:#ff0000,stroke-width:2px;
+    classDef accion fill:#e1f5fe,stroke:#03a9f4,stroke-width:1px;
+    classDef auto fill:#f3e5f5,stroke:#9c27b0,stroke-width:1px;
+    classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+
+    subgraph Movil["App Móvil (Embalador / Preparador)"]
+        A(["Busca producto en estantería"]) --> B{"¿Se encuentra la<br/>cantidad requerida?"}
+        B -- Sí --> C["Marca ítem como OK en preparación"]
+        B -- No --> D["Presiona 'Reportar Faltante'<br/>(declara cantidad_faltante)"]:::accion
+    end
+
+    subgraph MotorPOS["Motor POS Local y Gestión de Estado"]
+        D --> E["Pasa estado de Carrito a 'INCOMPLETO'<br/>(Bloquea botón de cobro - Regla C-11)"]:::auto
+        E --> F["Emite notificación WebSockets a terminal de Caja"]:::auto
+        E --> G["Inserta registro en ALERTA_CUARENTENA<br/>(estado: 'PENDIENTE', cantidad_faltante)"]:::alerta
+    end
+
+    subgraph Caja["Punto de Venta y Gestión Administrativa"]
+        F -.-> H["Cajero visualiza alerta en pantalla"]
+        H --> I["Cajero regulariza en mostrador:<br/>ajusta cantidad entregada o descarta ítem"]:::accion
+        I --> J["Carrito transiciona a LISTO_PARA_COBRAR<br/>y cajero finaliza el cobro con el cliente"]:::auto
+        
+        G -.-> K["Administrador abre panel de Alertas de Cuarentena"]
+        K --> L{"Inspección en góndola / depósito:<br/>¿Se localizó físicamente el producto?"}:::decision
+        
+        L -- "Sí, falsa alarma" --> M["Marca alerta como 'FALSA_ALARMA'<br/>(error de búsqueda u orden en góndola)"]:::accion
+        L -- "No, es merma física real" --> N["Marca alerta como 'MERMA_CONFIRMADA'<br/>(Resolución C-23: deduce cantidad faltante)"]:::accion
+    end
+
+    subgraph Resolucion["Resolución de Inventario y Sincronización"]
+        M --> O["Levanta Cuarentena y restaura disponibilidad<br/>(stock_fisico permanece inalterado)"]:::auto
+        N --> P["Aplica deducción de merma:<br/>stock_fisico = stock_fisico - cantidad_faltante"]:::auto
+        P --> Q["Registra auditoría 'RESOLUCION_CUARENTENA'<br/>(motivo: Merma física confirmada)"]:::auto
+        M --> S["Registra auditoría 'RESOLUCION_CUARENTENA'<br/>(motivo: Falsa alarma por hallazgo posterior)"]:::auto
+        Q --> T["Encola delta para sincronización Cloud"]:::auto
+        S --> T
+        O --> T
+    end
+```
+
+&nbsp;
+
+---
+
+## Especificaciones y Reglas de Negocio (Trazabilidad PAT)
+
+### 1\. Resolución Matemática de la Merma en Cuarentena (Resolución C-23)
+
+- **El Problema del "Ajuste a 0":** Fijar el inventario en cero (`stock_fisico = 0`) ante un reporte de faltante es una práctica destructiva e incorrecta. Si el sistema registraba 10 unidades en stock, un cliente solicitó 2 unidades y el preparador no las halló, la discrepancia probada es de 2 unidades, no de 10\. Forzar el stock a cero provocaría la pérdida contable de las 8 unidades restantes que bien podrían estar ubicadas en un pasillo secundario, en depósito o en exhibición.  
+- **Fórmula Universal y Correcta:** $$\text{stock\_fisico} = \text{stock\_fisico} - \text{cantidad\_faltante}$$ De esta forma:  
+  - Si el stock registrado era 10 y faltaron 2: $10-2=8$.  
+  - Si el stock registrado era 2 y faltaron 2: $2-2=0$.  
+  - Si el administrador inspecciona toda la sucursal y constata que el estante está 100% desabastecido, puede ejecutar complementariamente un `AJUSTE_STOCK` a 0 con su debida justificación forense.
+
+### 2\. Tratamiento de Falsas Alarmas (Ruta B)
+
+- Cuando el producto es hallado con posterioridad (por ejemplo, detrás de otra marca o mal ordenado por un cliente):  
+  - El `stock_fisico` **no se modifica** (nunca se había descontado).  
+  - La reserva temporal del pedido original ya había sido descartada al momento en que el cajero regularizó la venta frente al mostrador.  
+  - La alerta transiciona a `FALSA_ALARMA`, quedando registrada en `AUDITORIA` para proveer métricas operativas (detección de problemas recurrentes de ordenamiento o capacitación en góndola).
+
+[image1]: <data:image/png;base64,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>

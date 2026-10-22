@@ -1,0 +1,520 @@
+# POSLyon — Documento Maestro de Especificación de Requisitos de Software (ERS) y Dominio de Negocio
+
+> **Sistema:** POSLyon — Punto de Venta Local-First Multi-Sucursal  
+> **Versión de Especificación:** 2.0 (Post-Auditoría Integral PAT)  
+> **Estado:** 100% Auditado, Subsanado y Aprobado para Construcción  
+> **Cobertura de Trazabilidad:** 20 / 20 Requisitos Funcionales y No Funcionales
+
+---
+
+## Resumen Ejecutivo del Dominio
+
+POSLyon es un sistema de punto de venta (**Point of Sale \- POS**) diseñado específicamente para comercios de proximidad, franquicias, autoservicios y kioscos estructurados en múltiples sucursales con una topología **Offline-First / Local-First**.
+
+Cada sucursal opera como un nodo autónomo con su propia base de datos local SQLite empotrada en el punto de venta (Desktop POS en Electron y Picking Mobile en React Native Expo), lo que elimina la latencia de internet en caja y garantiza el cobro ininterrumpido ante cortes prolongados de energía o conectividad. Los cambios se propagan de manera reactiva e inmediata en la red de área local (LAN WebSockets) y se sincronizan asíncronamente con un backend central en la nube (NestJS \+ PostgreSQL) mediante cursores temporales ISO-8601 UTC de alta precisión y un protocolo de Control de Concurrencia Optimista (OCC) con merge aditivo.
+
+---
+
+# Análisis de la Lógica de Negocio (Puntos Clave)
+
+- **Diccionario de proveedores:** A nivel de base de datos, esto requerirá una tabla de mapeo (ej. ProviderProductMapping) que relacione el provider\_id, el provider\_product\_code (o nombre literal) y el internal\_product\_id. Al procesar un remito o factura electrónica (incluso se podrá parsear PDFs a futuro), el sistema buscará en esta tabla para hacer la equivalencia automática.  
+- **Sincronización de carritos en tiempo real:** Para que el celular del armador de pedidos vea el carrito que el cajero está cargando en el carrito, si ambos están en la misma red Wi-Fi del local, se puede usar WebSockets (Socket.io) levantando un pequeño servidor local en el POS de la caja, o depender de la base de datos reactiva local.  
+- **Trazabilidad y auditoría:** En lugar de sobrecargar las tablas principales, esto se resuelve con el patrón *Event Sourcing* o mediante tablas de *Audit Logs*. Cada actualización hace un *trigger* que guarda el estado anterior, el estado nuevo, el user\_id y el timestamp.  
+- **Previsualización del ticket de un carrito:** En la app de escritorio (React \+ Electron), esto se logra renderizando el ticket en una ventana o componente oculto y utilizando librerías como html2canvas para convertir el nodo DOM en una imagen que se copia directamente al portapapeles del sistema operativo (`clipboard.write`), o se imprime directamente vía IPC al proceso principal de Electron mediante ESC/POS.  
+- **Catálogo global vs. inventario local:** El producto "Coca Cola 250ml" existe una sola vez en el sistema global (con su nombre y códigos de barra), pero sus atributos de negocio (Precio de Costo, Precio de Venta, Stock, Stock Mínimo) ahora deben vivir en una tabla intermedia (Producto\_Sucursal), ya que cada local tiene su propia realidad.  
+- **Transacciones en dos fases (Two-Phase Commit a nivel de negocio):** La transferencia de mercadería entre sucursales no debe ser un simple "restar acá y sumar allá" simultáneo, porque el camión/flete puede tener un accidente o perder mercadería. Debe haber un estado de "en tránsito" (sale de la Sucursal A, y la Sucursal B debe "aceptar" la recepción para que impacte su stock).  
+- **Relación N a N para Usuarios:** Un cajero no pertenece a una sucursal, sino que tiene "accesos" o "turnos" en distintas sucursales.  
+- **Offline-First y UUIDs, cero colisiones al sincronizar:** Si usáramos un entero autoincremental (INT) como id, al momento de subir los registros acumulados a la nube, la sucursal de Corrientes y la sucursal de Resistencia (por ejemplo) chocarían en los mismos IDs numéricos (ambas intentando insertar su registro con id: 1, id: 2, etc.). Al usar UUID, cada registro de una tabla nace con una identidad globalmente única, permitiendo que la base de datos central en PostgreSQL los reciba e inserte en paralelo de manera fluida y sin conflictos.
+
+Existen dos problemas clásicos en el diseño de sistemas distribuidos e-commerce de concurrencia de datos y niveles de aislamiento:
+
+## Reactividad de Precios y el "Congelamiento" en el Carrito
+
+Como WatermelonDB es reactiva por defecto, si el administrador actualiza un precio desde su panel de administración, la pantalla del cajero de la sucursal o sucursales afectadas, se actualizarán en milisegundos. Sin embargo, aplicar esta reactividad a un producto que ya está dentro de un carrito abierto rompe el contrato comercial con el cliente y genera fricción en la caja (el cliente vio un precio, y al momento de pagar se le cobra otro).
+
+La solución estándar en ingeniería financiera es el **Congelamiento de Precio (Price Snapshotting)**:
+
+- **En la Búsqueda / Vista Previa:** El componente de interfaz lee directamente de la tabla PRODUCTO\_SUCURSAL. Si hay una actualización masiva, el precio en pantalla cambia instantáneamente para las nuevas consultas.  
+- **Al agregar al Carrito:** En el milisegundo en que el cajero escanea el ítem, el sistema **copia** el valor actual y lo inserta como un valor estático en el campo precio\_unitario de la tabla VENTA\_DETALLE. A partir de ese momento, el producto dentro de ese carrito específico se vuelve *inmutable* frente a los cambios de la base de datos principal.
+
+Para que esta decisión sea configurable para cualquier modelo de negocio, el administrador necesita establecer estrategias de despliegue (Rollouts), que podrá elegir entre **toggle features** en un panel de configuración de administrador, los cuales pueden ser:
+
+- **Inmediata:** Aplica al instante en las bases locales (solo afecta futuras lecturas, no carritos abiertos).  
+- **Diferida (Programada):** La actualización se descarga en segundo plano en los kioscos, pero incluye un campo fecha\_vigencia. El sistema del kiosco recién empieza a mostrar y utilizar el precio nuevo cuando el reloj local supera esa hora (por ejemplo, 03:00 AM).  
+- **Al Cierre de Turno:** La actualización queda en cola y se aplica automáticamente en el momento exacto en que el cajero actual presiona "Cerrar Caja / Arqueo", evitando que haya cambios de precio en medio de su turno.
+
+## Concurrencia de Inventario: Reserva Lógica (Soft Allocation)
+
+Supongamos que tenemos un producto con 100 de stock, abrimos un carrito y lo insertamos, ahora tendremos 99 de stock. Inmediatamente abrimos otro carrito e insertamos el mismo producto: ¿debería decir que tenemos 99 de stock, o 98 de stock?. Teóricamente tenemos 98, porque ya tenemos un carrito con el mismo producto pre-ordenado, pero aún no se cerró la venta, por lo tanto no podemos asumir que ya tenemos 98 de stock sin concretar ninguna venta todavía. Esto se resuelve separando el inventario en dos dimensiones matemáticas:
+
+- **Stock Físico (Hard Stock):** Las unidades reales que hay en la estantería (ej. 100). Este número *solo* se descuenta cuando una venta pasa al estado definitivo de `CONFIRMADA`.  
+- **Stock Reservado:** La suma temporal de todas las unidades contenidas en carritos con `estado_general = 'BORRADOR'` en todos los puntos de venta del local.  
+- **Stock Disponible (Soft Allocation):** Es un campo calculado dinámicamente en tiempo real: StockDisponible \=StockFisico \- StockReservado
+
+**Sincronización Local entre Cajas Concurrentes (Resolución C-15):** Si la Caja A escanea 1 unidad, su SQLite local incrementa `stock_reservado = 1` y emite un evento liviano a través de la red local Wi-Fi/LAN mediante WebSockets (`RESERVA_STOCK_LOCAL { id_producto, delta_reservado: +1 }`). La Caja B recibe el evento y actualiza su memoria y base SQLite local en milisegundos, calculando inmediatamente el Stock Disponible en 99 sin requerir conexión a internet ni consultar a la nube. Si el Carrito A se cancela o expira por inactividad, se emite un delta negativo (`-1`), la reserva se libera y el disponible retorna a 100 en todas las cajas. *(Ver flujo completo en [Diagrama de Secuencia Sincronización de Reservas LAN entre Cajas](file:///d:/Contr/Downloads/POSLyon/docs/Diagrama%20de%20Secuencia%20Sincronizaci%C3%B3n%20de%20Reservas%20LAN%20entre%20Cajas.md))*.
+
+Considerando que existen modelos y procesos de negocio que pueden variar, no se puede “hardcodear” estos comportamientos en el código, sino que deben vivir en un panel de administración configurable. A nivel de base de datos, en lugar de crear decenas de columnas booleanas sueltas, la tabla CONFIGURACION\_SUCURSAL almacena sus parámetros en la columna `reglas_negocio` estructurada en formato **JSONB** (soportado nativamente por PostgreSQL por su alta eficiencia y respaldado en SQLite):
+
+{
+
+&nbsp;&nbsp;"comportamiento\_precios": "cierre\_turno",
+
+&nbsp;&nbsp;"hora\_actualizacion\_diferida": "03:00",
+
+&nbsp;&nbsp;"descuento\_stock": "reserva\_logica",
+
+&nbsp;&nbsp;"ttl\_carrito\_minutos": 30,
+
+&nbsp;&nbsp;"politica\_stock": "UNIVERSAL\_PERMISIVO",
+
+&nbsp;&nbsp;"feature\_toggles": {
+
+&nbsp;&nbsp;&nbsp;&nbsp;"habilitar\_venta\_offline\_avanzada": true,
+
+&nbsp;&nbsp;&nbsp;&nbsp;"requerir\_control\_ciego\_arqueo": true,
+
+&nbsp;&nbsp;&nbsp;&nbsp;"habilitar\_alertas\_sonoras\_preparacion": false
+
+&nbsp;&nbsp;}
+
+}
+
+&nbsp;
+
+- **Aceptación Universal de Stock Negativo (Resolución C-12):** En sistemas de punto de venta físico, la presencia real del cliente frente a la caja con el producto en mano prevalece incondicionalmente sobre cualquier desfasaje de inventario en el software. En consecuencia, el sistema adopta una política **universalmente permisiva**: `PRODUCTO_SUCURSAL.stock_fisico` puede adoptar valores negativos sin bloqueos en UI, sin interrupciones del cobro y sin requerir autorizaciones de supervisores. Las discrepancias físicas se auditan y notifican asíncronamente en segundo plano (`AUDITORIA`), permitiendo que el encargado realice el conteo o reconciliación posterior.  
+- **Arquitectura Lista para Feature Toggles:** Aunque el stock negativo opera de manera universal e incondicional, la configuración incluye el bloque extensible `feature_toggles: Record<string, any>`. Esto prepara al sistema para desplegar nuevas funcionalidades de forma gradual o condicional por sucursal (ej. control ciego de arqueo, alertas sonoras, modos de sincronización) sin requerir migraciones estructurales (`ALTER TABLE`) ni recompilaciones de la aplicación de mostrador.
+
+Al iniciar sesión al comienzo del día, la aplicación local descarga este bloque JSON. El estado global de React (utilizando `useConfiguracionStore` con Zustand) lee estos parámetros y altera el comportamiento de ciertas funciones, permitiendo que la misma base de código opere de manera distinta según lo que se configuró para ese kiosco o empresa.
+
+[Vista interactiva de funcionamiento de Stock en Carrito](https://share.gemini.google/P8p1rU7mli2L)
+
+Para resolver la inyección dinámica de reglas de negocio sin modificar el código base (cumpliendo el Principio Abierto/Cerrado o *Open/Closed Principle* de SOLID), la ingeniería de software utiliza una combinación de estructuras de datos flexibles y patrones de comportamiento.
+
+---
+
+## **1\. Introducción y Propósito**
+
+### **1.1 Objetivo del Proyecto**
+
+Proveer un sistema integral de Punto de Venta (POS), control de inventario multi-sucursal y gestión financiera que garantice disponibilidad ininterrumpida de cobro mediante una arquitectura **Local-First (Offline-First)**, manteniendo la consistencia de datos contables y logísticos en una base de datos centralizada en la nube.
+
+### **1.2 Alcance del Sistema**
+
+El sistema cubre las operaciones en caja física (POS Desktop), armado y verificación de pedidos desde dispositivos móviles (Picking/Embalaje), administración centralizada de catálogos, créditos/fiados y precios por sucursal, devoluciones mediante Notas de Crédito, recepción de mercadería con mapeo de proveedores y transferencias entre sucursales.
+
+### **1.3 Definiciones y Acrónimos**
+
+- **Local-First / Offline-First:** Enfoque arquitectónico donde las lecturas y escrituras ocurren primero en la BD local de la sucursal (SQLite) y se sincronizan asíncronamente con PostgreSQL.  
+- **UUIDv4:** Universally Unique Identifier versión 4, utilizado obligatoriamente para evitar colisiones de ID entre nodos distribuidos sin conexión.  
+- **OCC (Optimistic Concurrency Control):** Mecanismo de control de concurrencia mediante versiones numéricas (version) en lugar de bloqueos pesados.  
+- **Soft Delete:** Borrado lógico mediante marcas de tiempo (deleted\_at) o estados (is\_active) para preservar la integridad de claves foráneas.  
+- **WAL (Write-Ahead Logging):** Mecanismo de las bases de datos para garantizar durabilidad y reanudación segura ante cortes de energía.
+
+## **2\. Descripción General del Sistema**
+
+### **2.1 Perspectiva del Producto**
+
+POSLyon se estructura como una **arquitectura distribuida Local-First con backend en nube (Monolito Modular)**:
+
+- **Caja POS (Desktop):** React \+ Electron \+ SQLite (interacción con impresoras térmicas y balanzas).  
+- **App Móvil (Operario/Embalador):** React Native (Expo) con sincronización en tiempo real vía WebSockets locales.  
+- **Nube Central:** NestJS \+ PostgreSQL para centralización de datos, motor de reglas, sincronización por deltas y auditoría.
+
+### **2.2 Perfiles y Roles de Usuario (RBAC)**
+
+- **Administrador Global:** Administra sucursales, usuarios, precios masivos, promociones, reglas de negocio, reconciliación de productos huérfanos, y realiza transferencias de mercaderías entre sucursales  
+- **Cajero de Sucursal:** Opera la caja física, abre/cierra turnos, realiza cobros (efectivo, tarjeta, fiado, pago mixto), procesa devoluciones, e ingresa abonos de clientes.  
+- **Embalador Móvil:** Visualiza carritos abiertos en tiempo real, verifica ítems físicamente y reporta faltantes desde la app móvil.
+
+## **3\. Requisitos Funcionales (RF)**
+
+### **Módulo 1: Operación de Caja y Cobro (Core POS)**
+
+- **RF-01 (Lectura de Productos y Precios):** El sistema debe permitir escanear códigos de barras o buscar productos localmente.  
+- **RF-02 (Gestión de Inventarios: Permisividad de Stock Negativo, Autosanación y Expiraciones):**  
+  - **Aceptación Universal de Stock Negativo:** Tanto a nivel local (SQLite) como en la nube (PostgreSQL), la variable stock\_fisico **puede adoptar valores negativos sin restricción ni bloqueo de UI**. Ninguna venta o edición de carrito se detendrá por falta de stock.  
+  - **Bloqueo Estricto de Cobro en Estado Incompleto (Regla C-11):** Si el preparador o controlador detecta mercadería insuficiente o faltante, el carrito transiciona a `INCOMPLETO` y **deshabilita terminantemente el botón de cobro y finalización en todos los dispositivos**. El cajero debe regularizar el carrito en mostrador (ajustando la cantidad física o descartando el ítem faltante) para que retorne a `A_PREPARAR` con el total recalculado antes de habilitar el cobro.  
+  - **Protocolo de Ajuste de Auditoría por Descuadre:** Cuando la sincronización en la nube produzca un stock\_fisico \< 0, el backend generará automáticamente un registro de alerta en AUDITORIA. El Administrador regularizará el stock real desde el panel mediante un ajuste manual con campo obligatorio motivo (justificación textual).  
+  - **Protección de Reloj (Clock Skew Protection \- Resolución S-10):** La vigencia de carritos en `BORRADOR` y la expiración de reservas se evalúan contra la marca de tiempo sincronizada de la nube o servidor NTP. En **modo offline autónomo**, el sistema utiliza el avance del **reloj monótono de hardware (`performance.now()`)** combinado con una **guarda de monotonía histórica (*High Watermark*)** sobre SQLite (`MAX(created_at, fecha)`): si un operador atrasa manualmente la fecha u hora del sistema operativo, el tiempo confiable jamás retrocede por debajo del registro histórico más reciente, neutralizando cualquier intento de congelar reservas vencidas y emitiendo una alerta forense por desfase temporal regresivo.  
+- **RF-03 (Reserva Dinámica de Stock y Propagación LAN \- Resoluciones C-15 y C-16):** Cada producto agregado o retirado de un carrito en `BORRADOR` actualiza inmediatamente `stock_reservado` en la base SQLite local y difunde un evento WebSocket liviano en la red de área local (`RESERVA_STOCK_LOCAL { id_producto, delta_reservado }`) para que todas las cajas concurrentes de la sucursal reflejen el cálculo instantáneo de `StockDisponible = StockFisico - StockReservado` sin latencia ni consumo de ancho de banda hacia la nube. La variable `stock_reservado` es siempre no negativa ($\geq 0$); si la demanda supera la existencia en estantería, es el `StockDisponible` el que puede adoptar valores negativos sin bloquear el mostrador. Los carritos en `BORRADOR` y `CANCELADA` residen estricta y exclusivamente en las terminales del local y jamás se envían a la nube (solo las ventas con `estado_general = 'CONFIRMADA'` viajan vía Push Delta a PostgreSQL). En caso de corte de red LAN o discrepancia de inventario en góndola, la política universal de stock permisivo (RF-02) garantiza que la venta presencial en mostrador se cobre sin bloqueos.  
+- **RF-04 (Venta de Productos a Granel y Packs \- Resolución O-26):** El sistema debe soportar ventas por peso decimal (vía balanza o manual) y desglosar automáticamente packs/lotes multiplicando el stock consumido sobre el producto base.  
+  - **Inexistencia de Stock Físico Propio en Packs:** Los packs y agrupaciones (ej. Pack de 6 Cervezas, Caja de 12 Alfajores) no poseen registro de inventario físico en `PRODUCTO_SUCURSAL`. Solo el producto base unitario almacena `stock_fisico` y `stock_reservado`.  
+  - **Cálculo Virtual de Disponibilidad:** La disponibilidad vendible del pack se calcula dinámicamente como StockDisponibleBase / multiplicador\_stock.  
+  - **Deducción Recursiva de Inventario:** Al confirmarse la venta de $N$ packs, el sistema decrementa atómicamente N \* multiplicador\_stock sobre las existencias del `id_producto_base` en la sucursal.  
+- **RF-05 (Pagos Mixtos):** El sistema debe permitir saldar una misma venta combinando múltiples métodos de pago (ej. Efectivo \+ Cuenta Corriente) en una transacción atómica.  
+- **RF-06 (Motor de Promociones Dinámico \- Resolución O-11):**  
+  - **Mecanismo de Descuento/Promociones (Snapshot de Precios):** Las promociones y descuentos dinámicos (combos, 2x1, etc.) **jamás** alteran la columna `VENTA_DETALLE.precio_unitario`. El snapshot del precio lista de la góndola permanece intacto. Los descuentos se aplican de forma aditiva en la columna `VENTA_DETALLE.monto_descuento`. Esto mantiene la integridad del precio base en góndola para auditoría.  
+  - **Tipología de Estrategias (`tipo_efecto`):** El motor implementa el patrón *Strategy* soportando: (1) `PORCENTAJE` (descuento porcentual sobre ítems calificados); (2) `PRECIO_FIJO` (precio cerrado por conjunto de productos); (3) `CANTIDAD_BONIFICADA` (promociones por volumen como 2x1 o 3x2, donde `valor_efecto` especifica las unidades a pagar vs `cantidad_minima` llevadas); (4) `MONTO_FIJO_DESCUENTO` (deducción monetaria directa).  
+  - **Combos Multi-Producto Dinámicos:** La relación `PROMOCION_PRODUCTO` define `decimal cantidad_requerida`, permitiendo armar combos con artículos heterogéneos y mercadería a granel/pesable (ej. 1 Gaseosa \+ 0.500 kg de Pan).  
+  - **Tope de Aplicación y Alcance Geográfico:** `PROMOCION.cantidad_maxima` establece el número máximo de veces que la promoción puede aplicarse en un mismo comprobante (evitando desabastecimiento por compras mayoristas). La columna `id_sucursal FK` permite delimitar promociones a una tienda puntual, aplicando universalmente a toda la cadena cuando `id_sucursal IS NULL`.  
+  - **Conmutación Minorista/Mayorista:** La activación del selector (toggle) de precio mayorista en un carrito abierto desencadena un **recálculo total e incondicional** de todas las líneas del carrito. Si un producto cambió de precio en la base de datos local mientras el carrito estaba abierto, al cambiar a mayorista prevalecerá el **precio mayorista vigente en el catálogo local al instante exacto del recálculo**.
+
+**Módulo 2: Cuentas Corrientes, Crédito y Abonos**
+
+- **RF-07 (Control de Límite de Crédito, Fiados Inter-Sucursales y Resiliencia en Concurrencia \- Resolución S-11):**  
+  - **Compras Fiadas Inter-Sucursales (Padrón de Clientes Replicado):** Todo cliente registrado en la cadena comercial puede realizar compras a crédito (fiado) en **cualquier sucursal**, independientemente de su sucursal de radicación original (`CLIENTE.id_sucursal`). La entidad `CLIENTE` se replica globalmente en todas las terminales locales con su `saldo_deudor` y `limite_credito` consolidados. Cualquier terminal valida localmente que `saldo_deudor + monto_compra <= limite_credito`.  
+  - **Aprobación de Exceso de Crédito Post-Sincronización:** Si la sincronización de una venta fiada o mixta ingresa a la nube y se detecta que `saldo_deudor > limite_credito` (debido a ventas concurrentes en distintas tiendas offline o modificaciones remotas del límite), **el servidor aceptará la venta y actualizará la deuda consolidada del cliente** para no penalizar la transacción presencial consumada en mostrador.  
+  - **Trazabilidad Causal en Auditoría:** El backend insertará una alerta tipo `EXCESO_LIMITE_CREDITO_POST_SYNC` en la tabla AUDITORIA, marcando al cliente con `requiere_revision = true` y reconstruyendo la línea de tiempo:  
+    - Marca de tiempo y valor del `limite_credito` original.  
+    - Modificación remota o ventas concurrentes inter-sucursales registradas.  
+    - Confirmación de la venta en caja y nuevo `saldo_deudor` resultante.  
+- **RF-08 (Registro de Abonos Globales \- Patrón Signed Ledger):** El sistema debe permitir registrar abonos de clientes a su deuda global (sin alterar comprobantes ni ventas pasadas), impactando el medio de pago seleccionado en el turno de caja actual (incrementando el efectivo físico de la gaveta únicamente si el abono fue en efectivo según RF-17 y Resolución O-21) y reduciendo la deuda del cliente mediante la inserción de un asiento inmutable con signo negativo en el libro mayor (`CUENTA_CORRIENTE.monto < 0`), disminuyendo coherentemente `CLIENTE.saldo_deudor`.
+
+### **Módulo 3: Devoluciones y Notas de Crédito**
+
+- **RF-09 (Devoluciones con Desacoplamiento Temporal):** Las devoluciones deben vincularse al id de la venta original en la nota de crédito para validar cantidades compradas, pero impactar financieramente en el id\_turno\_caja del cajero que procesa la devolución hoy.  
+  - **Restauración de Inventario en Devoluciones:** Todo producto devuelto mediante Nota de Crédito retorna automáticamente al stock\_fisico de la sucursal actual, dejando constancia en el detalle de la nota.  
+  - **Garantía de Reembolso Neto por Promociones Prorrateadas:** Cuando se devuelve un producto adquirido bajo una promoción o combo con descuento (`VENTA_DETALLE.monto_descuento > 0`), el importe a reembolsar se calculará deduciendo el descuento promocional unitario proporcional abonado:&nbsp;
+
+descuento\_unitario \= original.monto\_descuento / original.cantidad
+
+descuento\_devuelto \= item.cantidad \* descuento\_unitario
+
+subtotal\_reembolso \= (item.cantidad \* original.precio\_unitario) \- descuento\_devuelto
+
+- La entidad `NOTA_CREDITO_DETALLE` mantendrá el precio de lista original en `precio_unitario_momento` y asentará el descuento deducido en `monto_descuento`, garantizando que el comercio jamás reembolse el precio de lista bruto cuando se cobró una tarifa bonificada.  
+- **RF-10 (Tipificación de Compensación):** Para ventas a clientes registrados, el sistema debe permitir compensación por efectivo de caja o reducción de deuda. Para ventas anónimas (id\_cliente IS NULL), solo se permitirá "Efectivo de Caja". Se contemplan los siguientes casos límite:  
+  - **Liquidación de Devoluciones:**  
+    - **Opción A (Efectivo):** Supongamos que se devolverá un producto de \$5.000. En la caja registradora, se hará un egreso de \$5.000 (impactará el arqueo como egreso en MOVIMIENTO\_CAJA del turno actual).  
+    - **Opción B (Reducción de Deuda):** No hay salida de dinero físico. Se aplica un crédito directo sobre la cuenta corriente del cliente.  
+  - **Límite de Reducción en Deuda Residual (saldo\_deudor \< monto\_devolucion):** Si un cliente debe \$1.000 e intenta devolver un producto de \$5.000:  
+    - La opción "Reducción de Deuda" queda **deshabilitada**.  
+    - La **única opción válida es "Efectivo"**: el cajero entregará \$4.000 de la caja, el sistema ajusta la deuda de \$1.000 a \$0.00 (sin generar saldo negativo en la cuenta corriente) y registra el egreso contable del turno de los \$4.000. Por lo tanto, \$4.000 entregado en efectivo \+ \$1.000 de reducción de deuda, corresponderán a los \$5.000 que el cliente devuelve.  
+- **RF-11 (Inmutabilidad Histórica):** Una venta devuelta parcialmente solo actualizará la bandera tiene\_devolucion\_parcial \= true sin modificar los montos históricos originales.
+
+### **Módulo 4: Inventario y Reconciliación de Códigos Huérfanos**
+
+- **RF-12 (Venta Rápida / Artículo Comodín):** Si un código escaneado no existe localmente, el cajero debe poder venderlo bajo el producto reservado UUID 00000000-0000-0000-0000-000000000000 ingresando texto y precio manual.  
+- **RF-13 (Reconciliación, Agrupación y Mermas por Turno de Códigos Huérfanos):** El administrador central debe poder agrupar ventas con codigo\_comodin, vincularlas o crear un producto oficial, mapear el historial de ventas pasadas al nuevo UUID y generar alertas de auditoría si hubo diferencias de precio.  
+  - **Agrupación Canónica y Filtro por Sucursal (Resoluciones C-22 y O-27):** Las ventas registradas con el UUID reservado `00000000-0000-0000-0000-000000000000` se agrupan en la vista de reconciliación mediante la clave canónica:&nbsp;
+
+clave\_agrupamiento \= COALESCE(codigo\_comodin, 'SIN\_CODIGO:' || TRIM(LOWER(nombre\_comodin)))
+
+- &nbsp;aislando la sucursal física de origen (`id_sucursal`). Los comodines con código escaneado se agrupan por su código, y los comodines ingresados en mostrador sin código se agrupan por su descripción normalizada, evitando que queden huérfanos e invisibles para la reconciliación.  
+  - **Auditoría de Merma/Sobrante Netos por Turno y por Renglón (Resolución C-21):** El sistema evalúa individualmente cada renglón vendido contra el precio oficial de lista, multiplicando la discrepancia unitaria por la cantidad física vendida:&nbsp;
+
+Diferencia Unitaria \= precio cobrado \- precio oficial
+
+Diferencia Total \= Diferencia Unitaria \* cantidad
+
+- Un resultado negativo indica merma lógica; un resultado positivo indica sobrante lógico. El sistema asienta un registro de auditoría forense granular para cada renglón (`VENTA_DETALLE`) y además consolida la sumatoria neta de dichas diferencias en el balance de auditoría del `TURNO_CAJA` correspondiente para el cierre de arqueo.  
+  - **Creación de Producto Nuevo (Opción A):** Para evitar stock negativo no deseado al reconciliar, la UI solicita el stock\_fisico\_actual. El backend calcula internamente el stock de inserción:  
+    $stockinicialcalculado=stockfisicoactual+cantidadtotalvendidahistorica$  
+    Al consolidar la transacción, el sistema crea el producto con stock\_inicial\_calculado y aplica la resta de la cantidad vendida histórica al reconciliar, dejando el stock\_fisico exacto al declarado (stock físico). Esto previene inconsistencias y evita generar stock negativo durante la consolidación.  
+  - **Vinculación a Existente (Opción B \- Doble Vía de Acción, Resolución C-19):** Si las unidades vendidas históricamente superan el stock registrado en la sucursal, la UI advierte la discrepancia y ofrece dos vías de resolución sin bloquear la operatoria:  
+    - **Vía A (Ajuste Físico Integrado):** El Administrador ingresa el conteo real en góndola en el mismo modal para regularizar el stock previo a la absorción de ventas, asentando la auditoría de ajuste.  
+    - **Vía B (Vinculación Directa Permisiva \- Política C-12):** El Administrador vincula inmediatamente sin ajustar; el sistema descuenta las unidades permitiendo que `PRODUCTO_SUCURSAL.stock_fisico` adopte valores negativos y genera una alerta automática tipo `DESCUADRE_STOCK_RECONCILIACION` en `AUDITORIA` para su posterior inventario físico.  
+  - **Preservación de Snapshot de Venta (Inmutabilidad Visual del Historial):** Al reconciliar, las columnas nombre\_comodin, codigo\_comodin y precio\_unitario de la tabla VENTA\_DETALLE **no se borran ni modifican**. Esto garantiza inmutabilidad legal y permite que las re-impresiones de tickets históricos mantengan los datos exactos cobrados en su momento.  
+  - **Re-vinculación Lógica:** Únicamente la clave foránea id\_producto pasa de la clave comodín al UUID del producto oficial recién creado o vinculado.
+
+### **Módulo 5: Recepción de Mercadería y Proveedores**
+
+- **RF-14 (Diccionario de Proveedores):** El sistema debe mapear las cadenas de texto de las facturas/remitos del proveedor (nombre\_en\_factura) con los id\_producto internos del catálogo global.  
+  - **Restricción de Unicidad:** La tabla DICCIONARIO\_PROVEEDOR implementa una restricción de unicidad compuesta UNIQUE(id\_proveedor, nombre\_en\_factura) para permitir soportar descripciones ambiguas o idénticas entre distintos proveedores.  
+- **RF-15 (Alerta de Variación de Costos):** Durante la recepción, si el costo del proveedor difiere del costo registrado, el sistema debe alertar al operario y permitir ajustar rápidamente los precios de venta al público.  
+  - **Sugerencia Dinámica de Precios:** Ante aumentos en el costo\_unitario, el sistema calcula un precio de venta sugerido manteniendo el porcentaje de margen de ganancia histórico:$PrecioSugerido=NuevoCosto\times \left({1+\frac{PrecioVentaActual-CostoActual}{CostoActual}}\right)$  
+    El usuario puede aceptar este valor, modificarlo manualmente antes de aplicar los cambios, o cancelar la sugerencia y mantener el precio igual. Esto permitirá proteger el margen de ganancia comercial sin depender de conexión a la nube.  
+  - **Actualización Local-First:** Los cambios de costos y precios de venta impactan inmediatamente en SQLite local y encolan la sincronización hacia la nube.  
+  - **Auditoría de Recepción (Resolución O-12):** `RECEPCION_MERCADERIA_DETALLE` almacena tanto `cantidad_declarada` (lo expresado formalmente en el remito o factura del proveedor) como `cantidad_recibida` (conteo físico en depósito) para trazabilidad de reclamos y ajuste de diferencias.
+
+### **Módulo 6: Transferencias entre Sucursales**
+
+- **RF-16 (Transferencias entre Sucursales \- Resoluciones C-24 y O-08):** Toda transferencia de stock entre sucursales debe manejar estados intermedios (`PENDIENTE_DESPACHO`, `EN_TRANSITO`, `COMPLETADA`, `DISCREPANCIA`, `DISCREPANCIA_RESUELTA`), descontando origen al despachar y sumando destino únicamente al recibir físicamente.  
+  - **Orquestación Exclusiva en Nube:** Las órdenes de transferencia son iniciadas exclusivamente por el **Administrador Global desde el Panel Web**. Esto elimina conflictos de deltas en tránsito y simplifica el modelo de datos.  
+  - **Precondición de Conectividad Dual (Handshake):** Una nueva transferencia no podrá ser creada a menos que **tanto la Sucursal Origen como la Sucursal Destino confirmen conexión activa a Internet** para recibir los eventos de descuento e incremento.  
+  - **Soporte Universal de Productos a Granel (Precisión Decimal):** Tanto `cantidad_enviada` como `cantidad_recibida` operan con tipo `decimal`, permitiendo la transferencia exacta de mercadería pesable, fraccionable o líquida sin pérdida de precisión.  
+  - **Gestión y Cierre de Discrepancias:** Ante diferencias entre la cantidad despachada y la recibida, el operario receptor asienta `id_usuario_recibe`, `fecha_recepcion` y `motivo_discrepancia`, marcando la orden como `DISCREPANCIA`. El Administrador resuelve manualmente el caso mediante el panel central registrando el ajuste en stock y la orden pasa a `DISCREPANCIA_RESUELTA` con trazabilidad del usuario y fecha de resolución.  
+  - **Inexistencia de Re-enrutamiento Físico:** No se permite re-enrocar transferencias iniciadas. Toda redirección requiere cerrar la transferencia previa e iniciar una nueva de B a C.
+
+### **Módulo 7: Arqueo, Sincronización y Auditoría**
+
+- **RF-17 (Cierre de Caja Ciego):** Al cerrar el turno, el cajero debe declarar el efectivo contado en gaveta. El sistema calculará la diferencia (declarado \- esperado) y fijará la foto en TURNO\_CAJA para evitar alteraciones retroactivas. Estos puntos evitan fraudes en caja y garantiza trazabilidad ante correcciones administrativas.  
+  - **Visibilidad Ciega:** El cajero declara el efectivo contado sin acceso al valor efectivo\_esperado calculado por el sistema.  
+  - **Cálculo Local de Cierre:** El efectivo\_esperado se calcula sobre la totalidad de las transacciones registradas en el SQLite local del turno actual:$EfectivoEsperado=FondoInicial+VentasEfectivo+AbonosEfectivo-EgresosCaja$  
+  - **Sangrías de Caja / Retiros:** Todo retiro parcial de efectivo hacia caja fuerte o pago de insumos constituye un registro explícito en MOVIMIENTO\_CAJA de tipo Egreso.  
+  - **Rectificación Auditada:** Un Administrador puede rectificar o re-abrir un turno de caja cerrado, exigiendo un motivo textual obligatorio guardado en AUDITORIA. Las diferencias menores entre el valor declarado y el esperado emiten registros informativos de auditoría sin bloquear la operación.  
+- **RF-18 (Sincronización por Cursores/Deltas \- Resolución O-25):** Las sucursales sincronizarán con la nube enviando y recibiendo únicamente los registros mutados posteriores a su última marca de tiempo (`last_pulled_at`), unificada unívocamente bajo el formato ISO-8601 UTC de alta precisión (con milisegundos).  
+  - **Restauración ante Desastre (Reset/Catch-Up \- Disaster Recovery \- Resolución S-11):** La reinstalación o recuperación de un nodo local ante fallas de hardware descarga selectivamente los datos desde PostgreSQL según su particionamiento arquitectónico:  
+    1. **Catálogo y Configuración Global (100%):** Descarga el 100% de `PRODUCTO_GLOBAL`, `CODIGO_BARRA`, `CATEGORIA`, `PROVEEDOR`, `PROMOCION`, `METODO_PAGO`, `PERMISO`, `USUARIO_PERMISO` y el padrón íntegro de `CLIENTE` (con sus saldos y límites de crédito consolidados para permitir cobro fiado inter-sucursal).  
+    2. **Inventario y Parámetros Propios (100% Sucursal):** Descarga el 100% de `PRODUCTO_SUCURSAL`, `CONFIGURACION_SUCURSAL`, `DICCIONARIO_PROVEEDOR` y `ALERTA_CUARENTENA` correspondientes **exclusivamente a su propia tienda** (`id_sucursal = @local_sucursal`).  
+    3. **Histórico Transaccional Operativo:** Descarga **únicamente las transacciones pertenecientes a su propia sucursal**, acotado a la ventana operativa activa (ej. últimos 90 días para validación de notas de crédito y turnos recientes), dejando las transacciones archivadas en la nube accesibles bajo demanda vía API, resguardando la agilidad del motor SQLite y preservando el aislamiento multi-tienda.  
+- **RF-19 (Interceptor de Auditoría Automático):** Toda actualización o eliminación lógica en tablas críticas debe registrar de forma transparente el estado anterior, el estado nuevo, el usuario y el motivo en la tabla AUDITORIA.  
+  - **Identidad de Sistema (SYSTEM\_BOT):** Las mutaciones automáticas ejecutadas por el motor (ej. expiración de reservas por *Garbage Collection*) se registran en AUDITORIA bajo un usuario reservado con UUID 00000000-0000-0000-0000-000000000001 (SYSTEM\_BOT). Esto mantiene la integridad referencial en la tabla para tareas automáticas.  
+- **RF-20 (Control de Acceso Basado en Permisos Granulares \- PBAC y Grafo de Dependencias \- Resolución O-01):** El sistema debe garantizar un esquema de autorización flexible sin encorsetamiento en roles estáticos, gobernado por capacidades atómicas y salvaguardas contra errores humanos:  
+  - **Inexistencia de Roles Rígidos:** Se descarta el uso de roles enlatados (`enum Rol { ADMIN, CAJERO }`). La autorización opera mediante **Permisos Atómicos (`PERMISO`)**.  
+  - **Usuario Dueño (Propietario / Tenant Owner):** Identificado por `es_dueno = true`. Es el titular comercial que contrata el servicio; cuenta con bypass absoluto y acceso irrestricto universal a todas las sucursales, configuraciones y módulos del sistema.  
+  - **Usuarios de Sucursal (Operadores):** Creados por el Dueño y asignados a una o más tiendas mediante `USUARIO_SUCURSAL`. Sus capacidades operativas se delimitan por sucursal a través de la tabla relacional `USUARIO_PERMISO`.  
+  - **Grafo de Dependencias de Permisos (Blindaje contra Inconsistencias):** Para evitar que el Administrador configure permisos incompatibles o desarticulados, cada permiso define formalmente sus dependencias operativas (`dependencias`):  
+    - Habilitar ventas a crédito/fiado (`POS_VENTA_COBRAR_FIADO`) exige y auto-activa obligatoriamente el acceso al directorio de clientes y cobro de abonos (`CLIENTES_VER` y `CLIENTES_REGISTRAR_ABONO`).  
+    - Emitir notas de crédito (`NOTAS_CREDITO_EMITIR`) exige permisos de cobro en caja y acceso a clientes (`POS_VENTA_COBRAR_DIRECTO` y `CLIENTES_VER`).  
+    - Ajustar inventario físico (`INVENTARIO_AJUSTAR_STOCK`) exige visualización de existencias (`INVENTARIO_VER_STOCK`).  
+    - Visualizar valorización total de stock en dinero (`INVENTARIO_VER_VALORIZACION`) se encuentra desacoplado de las existencias físicas para proteger datos sensibles frente al personal de mostrador.  
+    - La interfaz visual tilda y bloquea automáticamente los pre-requisitos al seleccionar un permiso dependiente, y el backend valida algorítmicamente el grafo acíclico (DAG) rechazando configuraciones inconsistentes con código **HTTP 400 Bad Request**.  
+  - **Presets Operativos Seguros (1-Click Safe Presets):** La interfaz provee plantillas pre-configuradas ("Cajero de Mostrador Básico", "Cajero Integral con Cuentas Corrientes", "Preparador / Embalador Móvil", "Encargado de Local", "Personalizado") para acelerar la delegación con total coherencia operativa.
+
+## **4\. Casos de Uso Clave (CU)**
+
+| ID Caso de Uso | Nombre | Actor Principal | Precondición | Flujo Principal Resumido | Postcondición |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| **CU-01** | Procesar Venta Mixta | Cajero | Turno de caja abierto | 1\. Agrega productos 2\. Selecciona "Pago Mixto". 3\. Ingresa efectivo y vincula cliente para remanente a crédito. 4\. Sistema valida límite de crédito. 5\. Consolida la transacción atómica SQL. | Venta registrada, dinero en caja, saldo deudor de cliente actualizado. |
+| **CU-02** | Reconciliar Códigos Huérfanos | Administrador Global | Existencia de ventas con codigo\_comodin | 1\. Abre panel de huérfanos. 2\. Selecciona código y elige "Vincular a Existente" o "Crear Nuevo". 3\. Ajusta o valida stock disponible. 4\. Transacción actualiza VENTA\_DETALLE históricas con el UUID real. | Registros históricos reasignados, alertas de merma/sobrante registradas en auditoría. |
+| **CU-03** | Emitir Nota de Crédito | Cajero | Venta previa existente | 1\. Busca ticket original. 2\. Selecciona ítems a devolver. 3\. Sistema valida que cantidad devuelta $\leq$ comprada. 4\. Se registra NOTA\_CREDITO vinculada al turno de hoy y se restaura el stock. | Stock reingresado, dinero devuelto de la caja actual o deuda del cliente reducida. |
+| **CU-04** | Recepción de Mercadería | Cajero | Factura o lista de proveedor cargada | 1\. Procesa archivo/datos. 2\. Consulta Diccionario de Proveedor. 3\. Mapea productos nuevos. 4\. Compara costos e incrementa stock físico local. | Stock local incrementado, diccionario actualizado, alerta de costo emitida. |
+
+&nbsp;
+
+## **5\. Requisitos No Funcionales (RNF)**
+
+- **RNF-01 (Rendimiento Local):** Las operaciones de lectura, escaneo y adición al carrito en la terminal POS no deben exceder los **100 ms** de respuesta, independientemente del estado del servidor en la nube.  
+- **RNF-02 (Disponibilidad y Tolerancia a Fallos \- Offline):** El sistema debe permitir operar el 100% de las funciones de cobro e inventario local durante cortes prolongados de internet o energía. Al reiniciarse, el motor SQLite debe ejecutar autosanación vía WAL (*Write-Ahead Logging*).  
+- **RNF-03 (Integridad de Datos, Inmutabilidad y PKs Universales \- Resoluciones O-02 y O-03):**  
+  - **Prohibición de Eliminación Física (Soft Delete):** Queda estrictamente prohibido el uso de la sentencia SQL `DELETE` en bases de datos relacionales. Toda baja lógica se gestiona mediante las columnas `deleted_at TIMESTAMP` o `activo BOOLEAN`, garantizando inmutabilidad histórica.  
+  - **Identificadores Únicos Universales (UUIDv4 PK):** Todas las entidades del modelo relacional, incluyendo tablas intermedias y asociativas (`CONFIGURACION_SUCURSAL`, `USUARIO_SUCURSAL`, `PRODUCTO_SUCURSAL`, `PROMOCION_PRODUCTO`, `DICCIONARIO_PROVEEDOR`, `PERMISO`, `USUARIO_PERMISO`), deben implementar su propia clave primaria única `id UUIDv4 PK`, garantizando cero colisiones durante la sincronización multi-sucursal.  
+  - **Auditoría Temporal y Sincronización Delta:** Todas las entidades mutables incorporan `created_at TIMESTAMP` y `updated_at TIMESTAMP` para soportar la sincronización por cursores temporales (RF-18).  
+  - **Transaccionalidad Atómica (ACID):** Las mutaciones de stock y transacciones financieras deben ejecutarse bajo bloques de transacción explícitos con propiedades **ACID** (BEGIN TRANSACTION ... COMMIT).  
+- **RNF-04 (Concurrencia Optimista \- OCC \- Resolución C-27):** Todas las entidades sujetas a edición compartida o mutaciones concurrentes (`PRODUCTO_SUCURSAL`, `CLIENTE`, `PRODUCTO_GLOBAL` y `CONFIGURACION_SUCURSAL`) deben incorporar control de concurrencia optimista mediante la columna secuencial entera `version`, rechazando escrituras sobre estados desfasados con código **HTTP 409 Conflict**:  
+  - En `PRODUCTO_SUCURSAL`, salvaguarda modificaciones concurrentes de precios (minorista/mayorista) y parámetros por tienda entre múltiples administradores o procesos (`UPDATE productos_sucursal SET version = version + 1 WHERE id_producto = :id AND id_sucursal = :sucursal AND version = :version_esperada`).  
+  - En `CLIENTE`, previene sobreescrituras desfasadas al actualizar `saldo_deudor` o `limite_credito` cuando múltiples terminales registran ventas a crédito o abonos en simultáneo.  
+  - Si la ejecución de actualización afecta **0 filas**, el backend aborta la operación con `ROLLBACK` y emite **HTTP 409 Conflict**, instruyendo a la UI a refrescar el estado sin pisar los cambios de terceros.  
+- **RNF-05 (Optimizaciones de Red y Payload):** La transferencia de deltas entre las bases locales y la nube debe utilizar compresión **Brotli** sobre canales HTTPS/WebSockets.
+
+## **6\. Matriz de Trazabilidad Requisitos ↔ Arquitectura ↔ Modelo de Datos**
+
+| Objetivo de Negocio / Dominio | Requisito Funcional / No Funcional | Caso de Uso | Componente / Patrón de Arquitectura | Tablas Afectadas en BD (ERD) |
+| :---- | :---- | :---- | :---- | :---- |
+| Garantizar cobro sin internet | RF-01, RF-02 | CU-01 | Architecture Local-First / SQLite / WatermelonDB / Clock Skew Guard | PRODUCTO\_SUCURSAL, VENTA, VENTA\_DETALLE, AUDITORIA |
+| Prevenir sobreventas entre cajas concurrentes | RF-03 | CU-01 | Soft Allocation en LAN / WebSockets Locales / Observer Pattern | PRODUCTO\_SUCURSAL (stock\_reservado, stock\_fisico) |
+| Soporte de pesables y packs sin stock propio | RF-04 | CU-01 | Virtual Inventory Composite / Multiplying Factor Pattern | PRODUCTO\_GLOBAL, PRODUCTO\_SUCURSAL, VENTA\_DETALLE |
+| Flexibilidad en métodos de cobro | RF-05, RF-07 | CU-01 | Transacción Atómica / Strategy Pattern / Exceso Sync Forense | VENTA, PAGO\_VENTA, CLIENTE, CUENTA\_CORRIENTE, AUDITORIA |
+| Motor dinámico de promociones y combos | RF-06 | CU-01 | Strategy Pattern / Price Snapshotting / Multi-Product Combos | PROMOCION, PROMOCION\_PRODUCTO, PRODUCTO\_SUCURSAL, VENTA\_DETALLE |
+| Cobro de deudas y abonos inmutables | RF-08 | CU-01, CU-03 | Signed Ledger Pattern / Desacoplamiento de Medios de Pago | CLIENTE, CUENTA\_CORRIENTE, MOVIMIENTO\_CAJA, TURNO\_CAJA |
+| Gestión de devoluciones contables | RF-09, RF-10, RF-11 | CU-03 | Desacoplamiento Temporal de Turnos / Clean Audit / Correlatividad NC | NOTA\_CREDITO, NOTA\_CREDITO\_DETALLE, MOVIMIENTO\_CAJA, VENTA |
+| Saneamiento de ventas sin catálogo | RF-12, RF-13 | CU-02 | Pattern UUID Comodín / Reconciliador SQL Atómico / Doble Auditoría | VENTA\_DETALLE, PRODUCTO\_GLOBAL, PRODUCTO\_SUCURSAL, AUDITORIA |
+| Automatización de compras y recepción | RF-14, RF-15 | CU-04 | Mapping Dictionary Strategy / Markup Preservation Strategy | DICCIONARIO\_PROVEEDOR, RECEPCION\_MERCADERIA, RECEPCION\_MERCADERIA\_DETALLE, PRODUCTO\_SUCURSAL |
+| Logística inter-sucursal segura | RF-16 | CU-04 | Two-Phase Commit Logístico / Precondición Handshake Online Dual | TRANSFERENCIA\_STOCK, TRANSFERENCIA\_DETALLE, PRODUCTO\_SUCURSAL, SUCURSAL |
+| Arqueo, cierre ciego e inmutabilidad contable | RF-17, RF-19 | CU-01, CU-03 | Interceptor de Auditoría Atómica / Cierre Ciego / Snapshots de Turno | TURNO\_CAJA, AUDITORIA, MOVIMIENTO\_CAJA |
+| Sincronización delta y disaster recovery acotado | RF-18 | CU-01, CU-04 | Cursor-Based Delta Sync (ISO-8601 UTC) / Selective Partitioning | SYNC\_CURSOR, VENTA, PRODUCTO\_SUCURSAL, CLIENTE, AUDITORIA |
+| Control de accesos granular sin roles rígidos | RF-20 | CU-01, CU-04 | Permission-Based Access Control (PBAC) / Directed Acyclic Graph (DAG) | USUARIO, USUARIO\_SUCURSAL, PERMISO, USUARIO\_PERMISO |
+| Resiliencia de concurrencia optimista | RNF-04 | CU-01, CU-04 | Control Concurrencia Optimista (OCC 409\) / Merge Aditivo | PRODUCTO\_SUCURSAL, CLIENTE, PRODUCTO\_GLOBAL, CONFIGURACION\_SUCURSAL |
+
+&nbsp;
+
+## **7\. Criterios de aceptación**
+
+### **Escenario 1: Preservación de Snapshot de Precio al Aplicar Promoción**
+
+Feature: Motor de Promociones y Snapshot de Precios Lista
+
+Scenario: Aplicación de descuento de combo sin alterar el precio lista unitario
+
+Given que el producto "Coca-Cola 2.25L" tiene un precio de lista de \$1500 en PRODUCTO\_SUCURSAL
+
+And existe una promoción activa de "2x \$2500" para "Coca-Cola 2.25L"
+
+When el cajero agrega 2 unidades de "Coca-Cola 2.25L" al carrito
+
+Then la columna VENTA\_DETALLE.precio\_unitario debe ser \$1500 para ambas filas
+
+And la columna VENTA\_DETALLE.monto\_descuento debe registrar \$500
+
+And el total calculado del carrito debe ser \$2500
+
+### **Escenario 2: Permisividad de Venta con Stock Físico Insuficiente**
+
+Feature: Venta e Inventario Desacoplado (Stock Negativo)
+
+Scenario: Venta exitosa de producto sin stock disponible en caja local
+
+Given que el producto "Galletitas Oreos" tiene stock\_fisico \= 1 y stock\_reservado \= 0
+
+When el cajero escanea 3 unidades de "Galletitas Oreos" en el carrito
+
+And procesa el cobro exitoso de la venta en efectivo
+
+Then la venta debe registrarse en estado CONFIRMADA
+
+And el stock\_fisico del producto en la base SQLite local debe pasar a \-2
+
+And el sistema no debe emitir ningún bloqueo en la pantalla de cobro
+
+### **Escenario 3: Sincronización de Venta Fiada con Exceso de Límite de Crédito**
+
+Feature: Sincronización en Nube y Tolerancia a Conflictos OCC de Crédito
+
+Scenario: Transacción offline fiada supera el límite de crédito modificado remotamente
+
+Given que el cliente "Juan Pérez" tenía limite\_credito \= \$10000 y saldo\_deudor \= \$4000
+
+And la caja local opera offline y procesa una venta a fiado por \$5000 (nuevo saldo local \$9000)
+
+And mientras la caja estaba offline, un Administrador redujo el limite\_credito a \$8000 en la nube
+
+When la caja local recupera conectividad y ejecuta el Push de Sincronización
+
+Then el servidor PostgreSQL central debe aceptar e insertar la venta
+
+And el cliente "Juan Pérez" debe quedar con saldo\_deudor \= \$9000
+
+And la API debe insertar un registro en AUDITORIA con la acción "EXCESO\_LIMITE\_CREDITO\_POST\_SYNC"
+
+### **Escenario 4: Devolución en Efectivo con Saldo Deudor Menor al Monto Devuelto**
+
+Feature: Devoluciones y Ajustes de Cuenta Corriente
+
+Scenario: Devolución en efectivo cuando la deuda activa es inferior al valor de la devolución
+
+Given que el cliente "María Gómez" tiene un saldo\_deudor \= \$1000
+
+And el cliente presenta un ticket de devolución previo con un ítem de \$5000
+
+When el cajero selecciona el método de compensación "Efectivo"
+
+Then la opción "Reducción de Deuda" debe estar deshabilitada en la UI
+
+And se debe generar un registro en MOVIMIENTO\_CAJA por un egreso de \$4000 en el turno actual
+
+And el saldo\_deudor de "María Gómez" debe actualizarse a \$0
+
+### **Escenario 5: Reconciliación de Código Comodín con Creación de Producto Nuevo**
+
+Feature: Reconciliación de Códigos Huérfanos con Cálculo de Stock
+
+Scenario: Creación de un producto oficial garantizando el stock físico real ingresado
+
+Given que existen 5 ventas registradas con el codigo\_comodin "77912345"
+
+When el Administrador selecciona reconciliar mediante "Crear Nuevo Producto"
+
+And declara un stock físico actual de 3 unidades y un precio oficial de \$1500
+
+Then el sistema debe calcular un stock de inserción inicial de 8 unidades (3 \+ 5\) And debe insertar el producto en PRODUCTO\_GLOBAL con sus metadatos maestros de catálogo (sin stock) And debe insertar el registro en PRODUCTO\_SUCURSAL para la sucursal de origen con stock\_fisico \= 8 And debe actualizar los 5 registros en VENTA\_DETALLE asignando el nuevo id\_producto
+
+And debe descontar las 5 unidades en PRODUCTO\_SUCURSAL dejando el stock\_fisico final en 3
+
+And las columnas nombre\_comodin y codigo\_comodin de VENTA\_DETALLE deben conservar sus valores originales
+
+### **Escenario 6: Cálculo de Merma Neta en Reconciliación por Turno**
+
+Feature: Cálculo de Merma y Sobrante Lógico en Reconciliación
+
+Scenario: Evaluación de mermas y sobrantes en un mismo turno de caja
+
+Given que en el "Turno \#10" de la sucursal "Sucursal Centro" se vendió el codigo\_comodin "999" en 2 ventas independientes
+
+And la Venta 1 registró 1 unidad con precio\_unitario \= \$1100
+
+And la Venta 2 registró 1 unidad con precio\_unitario \= \$1600
+
+When el Administrador vincula el código huérfano para dicha sucursal a un producto oficial con precio\_oficial \= \$1500
+
+Then la API debe registrar un evento granular en AUDITORIA para cada renglón de VENTA\_DETALLE
+
+And la merma por la Venta 1 debe ser \-$400(($1100 \- \$1500) \* 1\) con accion \= 'RECONCILIACION\_DISCREPANCIA'
+
+And el sobrante por la Venta 2 debe ser \+$100(($1600 \- \$1500) \* 1\) con accion \= 'RECONCILIACION\_DISCREPANCIA'
+
+And la API debe asentar un evento consolidado en AUDITORIA para el "Turno \#10" con accion \= 'RECONCILIACION\_DISCREPANCIA\_TURNO' registrando una merma lógica neta de \-$300(-$400 \+ \$100) para el arqueo de caja
+
+### **Escenario 7: Modificación de Costo y Sugerencia de Precio Venta en Recepción**
+
+Feature: Control de Recepción de Mercadería y Sugerencia de Precios
+
+Scenario: Recepción de factura con incremento de costo y cálculo de precio sugerido
+
+Given que el producto "Yerba Mate 500g" tiene un costo\_actual \= \$800 y precio\_venta \= \$1040 (30% margen)
+
+When el operario ingresa una recepción de mercadería con costo\_unitario \= \$1000
+
+Then el sistema debe emitir una alerta de "Variación de Costo"
+
+And debe desplegar un precio de venta sugerido de \$1300 en la UI
+
+When el operario confirma la actualización de precios aceptando la sugerencia
+
+Then el precio\_costo y precio\_minorista deben actualizarse inmediatamente en SQLite local
+
+And la tabla RECEPCION\_MERCADERIA\_DETALLE debe almacenar la cantidad\_declarada y cantidad\_recibida
+
+### **Escenario 8: Bloqueo de inicio de transferencia por falta de conexión en sucursal destino**
+
+Feature: Transferencias entre Sucursales con Requisito de Conectividad Dual
+
+Scenario: Bloqueo de inicio de transferencia por falta de conexión en sucursal destino
+
+Given que la "Sucursal A" tiene conexión activa a la nube
+
+And la "Sucursal B" se encuentra en estado OFFLINE
+
+When el Administrador intenta crear una transferencia de 50 unidades de "Sucursal A" a "Sucursal B"
+
+Then el sistema debe rechazar la operación con código HTTP 409 Conflict (Handshake rechazado por Sucursal B en estado OFFLINE)
+
+And no debe alterar el stock\_fisico de ninguna sucursal
+
+And la transferencia no debe pasar al estado EN\_TRANSITO
+
+### **Escenario 9: Cálculo exacto de efectivo esperado incluyendo sangrías de caja**
+
+Feature: Arqueo Ciego de Caja y Registro de Sangrías
+
+Scenario: Cálculo exacto de efectivo esperado incluyendo sangrías de caja
+
+Given que el turno de caja se abrió con un fondo inicial de \$5000
+
+And se registraron ventas en efectivo por \$20000
+
+And se registró una sangría de caja por \$8000 con concepto "Retiro a Caja Fuerte"
+
+When el cajero efectúa el cierre de caja ciego
+
+Then el sistema debe calcular internamente un efectivo\_esperado de $17000($5000 \+ \$20000 \- \$8000)
+
+And la pantalla del cajero no debe mostrar el monto calculado de \$17000
+
+### **Escenario 10: Expiración de carrito borrador según tiempo confiable (NTP y Modo Offline Autónomo)**
+
+Feature: Protección de Horario NTP y Monótono para Expiración de Borradores (Resolución S-10)
+
+Scenario: Expiración de carrito borrador según tiempo de servidor central (Modo Online)
+
+Given que un carrito borrador tiene fecha\_expiracion\_reserva establecida a las 20:00:00 UTC
+
+And el reloj local del sistema operativo fue modificado manualmente a las 19:00:00 UTC
+
+When el motor de sincronización consulta el horario real del servidor NTP (20:01:00 UTC)
+
+Then el sistema debe marcar el carrito como CANCELADA
+
+And debe revertir el stock\_reservado en PRODUCTO\_SUCURSAL
+
+Scenario: Expiración de carrito borrador durante desconexión prolongada (Modo Offline Autónomo)
+
+Given que el terminal POS se encuentra desconectado de internet (modo offline) con un carrito expirando a las 20:00:00 UTC
+
+And la última transacción registrada en SQLite tiene timestamp 20:05:00 UTC (High Watermark)
+
+When el operador atrasa deliberadamente el reloj de Windows a las 18:00:00 UTC para evitar la purga
+
+Then el GarbageCollectionService calcula el tiempo mediante el reloj monótono de hardware (performance.now()) y la guarda High Watermark
+
+And detecta que el tiempo de pared es inferior a 20:05:00 UTC, bloqueando el retroceso temporal
+
+And procesa atómicamente la expiración del carrito a CANCELADA, liberando el stock\_reservado y registrando una advertencia en AUDITORIA
+
+### **Escenario 11: Devolución Parcial de Producto Adquirido con Descuento Promocional**
+
+Feature: Devoluciones y Garantía de Reembolso Neto Promocional
+
+Scenario: Cálculo proporcional de descuento al devolver unidades de una venta bonificada
+
+Given que una venta previa contiene 2 unidades de "Coca-Cola 2.25L" con precio\_unitario \= \$1500 y monto\_descuento \= \$500 (total abonado \$2500)
+
+When el cajero procesa la devolución de 1 sola unidad de "Coca-Cola 2.25L"
+
+Then el sistema debe calcular el descuento unitario proporcional en $250($500 / 2 unidades)
+
+And la entidad NOTA\_CREDITO\_DETALLE debe registrar precio\_unitario\_momento \= \$1500, monto\_descuento \= \$250 y subtotal \= \$1250
+
+And el egreso contable de caja o ajuste de saldo no debe superar los \$1250
+
+And el sistema previene cualquier reembolso sobre el precio de lista bruto (\$1500), resguardando la integridad contable del comercio

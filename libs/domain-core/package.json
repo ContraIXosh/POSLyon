@@ -1,0 +1,10 @@
+{
+  "name": "@poslyon/domain-core",
+  "version": "1.0.0",
+  "description": "Núcleo de Dominio Puro de POSLyon (Enums, Interfaces, Contratos, Constantes y DTOs compartidos)",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}
