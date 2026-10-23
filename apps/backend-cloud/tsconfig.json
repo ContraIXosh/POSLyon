@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": "../../",
+    "paths": {
+      "@poslyon/domain-core": ["libs/domain-core/src/index.ts"],
+      "@poslyon/domain-core/*": ["libs/domain-core/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../libs/domain-core"
+    }
+  ]
+}
