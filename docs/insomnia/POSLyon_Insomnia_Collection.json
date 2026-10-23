@@ -1,0 +1,693 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-10-23T23:35:00.000Z",
+  "__export_source": "poslyon.engineering.team:v1.0.0",
+  "resources": [
+    {
+      "_id": "wrk_poslyon_cloud",
+      "_type": "workspace",
+      "name": "POSLyon — Backend Cloud API",
+      "description": "Suite integral de pruebas de API para POSLyon (Arquitectura SDD, Clean Code, Local-First)",
+      "scope": "collection"
+    },
+    {
+      "_id": "env_poslyon_local",
+      "_type": "environment",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "Entorno Local (Docker + NestJS)",
+      "data": {
+        "base_url": "http://localhost:3000/api",
+        "default_user_id": "550e8400-e29b-41d4-a716-446655440099",
+        "system_bot_id": "00000000-0000-0000-0000-000000000002",
+        "comodin_id": "00000000-0000-0000-0000-000000000001",
+        "sucursal_id": "550e8400-e29b-41d4-a716-446655440001",
+        "sucursal_destino_id": "550e8400-e29b-41d4-a716-446655440002",
+        "usuario_id": "550e8400-e29b-41d4-a716-446655440010",
+        "categoria_id": "550e8400-e29b-41d4-a716-446655440020",
+        "producto_id": "550e8400-e29b-41d4-a716-446655440030",
+        "cliente_id": "550e8400-e29b-41d4-a716-446655440040",
+        "turno_id": "550e8400-e29b-41d4-a716-446655440050",
+        "proveedor_id": "550e8400-e29b-41d4-a716-446655440060",
+        "recepcion_id": "550e8400-e29b-41d4-a716-446655440070",
+        "venta_id": "550e8400-e29b-41d4-a716-446655440080",
+        "transferencia_id": "550e8400-e29b-41d4-a716-446655440090",
+        "alerta_id": "550e8400-e29b-41d4-a716-446655440095"
+      }
+    },
+    {
+      "_id": "fld_01_health",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "01 - Healthcheck y Diagnóstico"
+    },
+    {
+      "_id": "req_health_ping",
+      "_type": "request",
+      "parentId": "fld_01_health",
+      "name": "1.1 Healthcheck General",
+      "method": "GET",
+      "url": "{{ _.base_url }}/health",
+      "headers": []
+    },
+    {
+      "_id": "req_health_db",
+      "_type": "request",
+      "parentId": "fld_01_health",
+      "name": "1.2 Diagnóstico Base de Datos (PostgreSQL)",
+      "method": "GET",
+      "url": "{{ _.base_url }}/health/db",
+      "headers": []
+    },
+    {
+      "_id": "fld_02_sucursales",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "02 - Sucursales y Configuración (RF-21)"
+    },
+    {
+      "_id": "req_sucursal_crear",
+      "_type": "request",
+      "parentId": "fld_02_sucursales",
+      "name": "2.1 Crear Sucursal Central (Casa Matriz)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/sucursales",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Casa Central Lyon\",\n  \"direccion\": \"Av. Corrientes 1234, CABA\",\n  \"telefono\": \"+54 11 4000-1111\",\n  \"es_casa_matriz\": true\n}"
+      }
+    },
+    {
+      "_id": "req_sucursal_crear_suc2",
+      "_type": "request",
+      "parentId": "fld_02_sucursales",
+      "name": "2.2 Crear Sucursal 2 (Sucursal Norte)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/sucursales",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Sucursal Lyon Norte\",\n  \"direccion\": \"Av. Santa Fe 4567, CABA\",\n  \"telefono\": \"+54 11 4000-2222\",\n  \"es_casa_matriz\": false\n}"
+      }
+    },
+    {
+      "_id": "req_sucursal_listar",
+      "_type": "request",
+      "parentId": "fld_02_sucursales",
+      "name": "2.3 Listar Todas las Sucursales Activas",
+      "method": "GET",
+      "url": "{{ _.base_url }}/sucursales",
+      "headers": []
+    },
+    {
+      "_id": "req_sucursal_obtener",
+      "_type": "request",
+      "parentId": "fld_02_sucursales",
+      "name": "2.4 Obtener Sucursal por ID (con Configuración N=1)",
+      "method": "GET",
+      "url": "{{ _.base_url }}/sucursales/{{ _.sucursal_id }}",
+      "headers": []
+    },
+    {
+      "_id": "req_sucursal_actualizar_config",
+      "_type": "request",
+      "parentId": "fld_02_sucursales",
+      "name": "2.5 Actualizar Configuración Sucursal (Feature Toggles)",
+      "method": "PATCH",
+      "url": "{{ _.base_url }}/sucursales/{{ _.sucursal_id }}/configuracion",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"plan_comercial\": \"PROFESSIONAL\",\n  \"permitir_venta_sin_stock\": true,\n  \"impresion_automatica\": true\n}"
+      }
+    },
+    {
+      "_id": "fld_03_usuarios",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "03 - Seguridad, Usuarios y PBAC (RF-20)"
+    },
+    {
+      "_id": "req_usuario_crear",
+      "_type": "request",
+      "parentId": "fld_03_usuarios",
+      "name": "3.1 Crear Nuevo Usuario (Cajero)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/usuarios",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Mariana Lopez\",\n  \"email\": \"mariana.caja@poslyon.com\",\n  \"password\": \"ClaveSegura2026!\",\n  \"rol_principal\": \"CAJERO\"\n}"
+      }
+    },
+    {
+      "_id": "req_usuario_listar",
+      "_type": "request",
+      "parentId": "fld_03_usuarios",
+      "name": "3.2 Listar Usuarios Registrados",
+      "method": "GET",
+      "url": "{{ _.base_url }}/usuarios",
+      "headers": []
+    },
+    {
+      "_id": "req_permisos_listar",
+      "_type": "request",
+      "parentId": "fld_03_usuarios",
+      "name": "3.3 Listar Permisos Granulares del Sistema",
+      "method": "GET",
+      "url": "{{ _.base_url }}/permisos",
+      "headers": []
+    },
+    {
+      "_id": "req_usuario_login",
+      "_type": "request",
+      "parentId": "fld_03_usuarios",
+      "name": "3.4 Autenticación / Login de Usuario",
+      "method": "POST",
+      "url": "{{ _.base_url }}/usuarios/login",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"email\": \"mariana.caja@poslyon.com\",\n  \"password\": \"ClaveSegura2026!\"\n}"
+      }
+    },
+    {
+      "_id": "fld_04_catalogo",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "04 - Catálogo e Inventario Base"
+    },
+    {
+      "_id": "req_categoria_crear",
+      "_type": "request",
+      "parentId": "fld_04_catalogo",
+      "name": "4.1 Crear Categoría de Productos",
+      "method": "POST",
+      "url": "{{ _.base_url }}/catalogo/categorias",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Almacén y Comestibles\",\n  \"descripcion\": \"Productos secos, fideos, arroces y enlatados\"\n}"
+      }
+    },
+    {
+      "_id": "req_producto_crear",
+      "_type": "request",
+      "parentId": "fld_04_catalogo",
+      "name": "4.2 Crear Producto Global con Código de Barra",
+      "method": "POST",
+      "url": "{{ _.base_url }}/catalogo/productos",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Arroz Gallo Oro Parboil 1kg\",\n  \"id_categoria\": \"{{ _.categoria_id }}\",\n  \"codigo_barra_principal\": \"7790070412345\",\n  \"es_pesable\": false\n}"
+      }
+    },
+    {
+      "_id": "req_producto_precios",
+      "_type": "request",
+      "parentId": "fld_04_catalogo",
+      "name": "4.3 Asignar Precios y Stock por Sucursal (OCC)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/catalogo/productos/{{ _.producto_id }}/precios",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"precio_costo\": 1200,\n  \"precio_minorista\": 1800,\n  \"precio_mayorista\": 1500,\n  \"stock_fisico\": 50,\n  \"stock_minimo\": 10,\n  \"expected_version\": 1\n}"
+      }
+    },
+    {
+      "_id": "req_producto_listar",
+      "_type": "request",
+      "parentId": "fld_04_catalogo",
+      "name": "4.4 Listar Productos por Sucursal",
+      "method": "GET",
+      "url": "{{ _.base_url }}/catalogo/productos?id_sucursal={{ _.sucursal_id }}",
+      "headers": []
+    },
+    {
+      "_id": "fld_05_caja",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "05 - Turnos de Caja y Arqueo Ciego (RF-17)"
+    },
+    {
+      "_id": "req_metodos_pago_listar",
+      "_type": "request",
+      "parentId": "fld_05_caja",
+      "name": "5.1 Listar Métodos de Pago Habilitados",
+      "method": "GET",
+      "url": "{{ _.base_url }}/caja/metodos-pago",
+      "headers": []
+    },
+    {
+      "_id": "req_turno_abrir",
+      "_type": "request",
+      "parentId": "fld_05_caja",
+      "name": "5.2 Apertura de Turno de Caja (Fondo Inicial)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/caja/turnos/abrir",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"monto_inicial\": 5000\n}"
+      }
+    },
+    {
+      "_id": "req_caja_movimiento",
+      "_type": "request",
+      "parentId": "fld_05_caja",
+      "name": "5.3 Registrar Movimiento de Caja (Ingreso / Egreso)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/caja/movimientos",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"tipo\": \"EGRESO\",\n  \"monto\": 800,\n  \"motivo\": \"Compra de artículos de limpieza\"\n}"
+      }
+    },
+    {
+      "_id": "req_turno_cerrar_arqueo",
+      "_type": "request",
+      "parentId": "fld_05_caja",
+      "name": "5.4 Cierre de Turno con Arqueo Ciego Obligatorio (RF-17)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/caja/turnos/cerrar",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"arqueo_efectivo_declarado\": 4200\n}"
+      }
+    },
+    {
+      "_id": "fld_06_clientes",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "06 - Clientes y Cuentas Corrientes (Signed Ledger)"
+    },
+    {
+      "_id": "req_cliente_crear",
+      "_type": "request",
+      "parentId": "fld_06_clientes",
+      "name": "6.1 Crear Cliente con Límite de Crédito",
+      "method": "POST",
+      "url": "{{ _.base_url }}/clientes",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Carlos Alberto Gomez\",\n  \"cuit_rut\": \"20-33445566-9\",\n  \"telefono\": \"+54 9 11 5566-7788\",\n  \"limite_credito\": 25000\n}"
+      }
+    },
+    {
+      "_id": "req_cliente_listar",
+      "_type": "request",
+      "parentId": "fld_06_clientes",
+      "name": "6.2 Listar Clientes Registrados",
+      "method": "GET",
+      "url": "{{ _.base_url }}/clientes",
+      "headers": []
+    },
+    {
+      "_id": "req_cliente_cuenta_corriente",
+      "_type": "request",
+      "parentId": "fld_06_clientes",
+      "name": "6.3 Consultar Libro Mayor Inmutable (Signed Ledger)",
+      "method": "GET",
+      "url": "{{ _.base_url }}/clientes/{{ _.cliente_id }}/cuenta-corriente",
+      "headers": []
+    },
+    {
+      "_id": "req_cliente_abono",
+      "_type": "request",
+      "parentId": "fld_06_clientes",
+      "name": "6.4 Registrar Abono a Cuenta Corriente en Mostrador (O-21)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/clientes/{{ _.cliente_id }}/abonos",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"monto\": 2000,\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"id_metodo_pago\": \"550e8400-e29b-41d4-a716-446655440095\",\n  \"motivo\": \"Pago a cuenta semanal en mostrador\"\n}"
+      }
+    },
+    {
+      "_id": "fld_07_proveedores",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "07 - Proveedores y Recepción de Mercadería"
+    },
+    {
+      "_id": "req_proveedor_crear",
+      "_type": "request",
+      "parentId": "fld_07_proveedores",
+      "name": "7.1 Registrar Proveedor Comercial",
+      "method": "POST",
+      "url": "{{ _.base_url }}/proveedores",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"razon_social\": \"Molinos Río de la Plata S.A.\",\n  \"cuit_rut\": \"30-50012345-8\",\n  \"telefono\": \"+54 11 4333-5555\",\n  \"email\": \"pedidos@molinos.com.ar\"\n}"
+      }
+    },
+    {
+      "_id": "req_proveedor_diccionario",
+      "_type": "request",
+      "parentId": "fld_07_proveedores",
+      "name": "7.2 Vincular Alias de Factura a Producto (RF-14)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/proveedores/{{ _.proveedor_id }}/diccionario",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre_en_factura\": \"ARR.GALLO.ORO.PB.1K\",\n  \"id_producto_global\": \"{{ _.producto_id }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_proveedor_recepcion",
+      "_type": "request",
+      "parentId": "fld_07_proveedores",
+      "name": "7.3 Crear Recepción de Factura / Remito",
+      "method": "POST",
+      "url": "{{ _.base_url }}/proveedores/recepciones",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_proveedor\": \"{{ _.proveedor_id }}\",\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"numero_remito_factura\": \"FAC-A-0005-00012999\",\n  \"renglones\": [\n    {\n      \"id_producto_global\": \"{{ _.producto_id }}\",\n      \"nombre_en_factura\": \"ARR.GALLO.ORO.PB.1K\",\n      \"cantidad_facturada\": 20,\n      \"cantidad_recibida\": 20,\n      \"costo_unitario_neto\": 1350\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_proveedor_confirmar_recepcion",
+      "_type": "request",
+      "parentId": "fld_07_proveedores",
+      "name": "7.4 Confirmar Recepción con Preservación de Markup (RF-15)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/proveedores/recepciones/{{ _.recepcion_id }}/confirmar",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"expected_version\": 1\n}"
+      }
+    },
+    {
+      "_id": "fld_08_ventas",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "08 - Core POS y Promociones (Ventas)"
+    },
+    {
+      "_id": "req_promocion_crear",
+      "_type": "request",
+      "parentId": "fld_08_ventas",
+      "name": "8.1 Crear Promoción Aditiva (Strategy RF-06)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/ventas/promociones",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"nombre\": \"Super Promo Arroz: 2x $3200\",\n  \"tipo_efecto\": \"PRECIO_FIJO_POR_CANTIDAD\",\n  \"valor_descuento\": 3200,\n  \"cantidad_minima\": 2,\n  \"id_producto_disparador\": \"{{ _.producto_id }}\",\n  \"id_sucursal\": \"{{ _.sucursal_id }}\"\n}"
+      }
+    },
+    {
+      "_id": "req_venta_crear_efectivo",
+      "_type": "request",
+      "parentId": "fld_08_ventas",
+      "name": "8.2 Emitir Venta en Mostrador (Efectivo)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/ventas",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"subtotal\": 3600,\n  \"descuento_total\": 400,\n  \"total\": 3200,\n  \"items\": [\n    {\n      \"id_producto\": \"{{ _.producto_id }}\",\n      \"cantidad\": 2,\n      \"precio_unitario\": 1800,\n      \"monto_descuento\": 400,\n      \"subtotal\": 3200,\n      \"tipo_precio\": \"MINORISTA\"\n    }\n  ],\n  \"pagos\": [\n    {\n      \"id_metodo_pago\": \"550e8400-e29b-41d4-a716-446655440095\",\n      \"monto\": 3200,\n      \"monto_recibido\": 4000,\n      \"vuelto\": 800\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_venta_crear_fiado",
+      "_type": "request",
+      "parentId": "fld_08_ventas",
+      "name": "8.3 Emitir Venta al Fiado en Cuenta Corriente (RF-07)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/ventas",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"id_cliente\": \"{{ _.cliente_id }}\",\n  \"subtotal\": 1800,\n  \"descuento_total\": 0,\n  \"total\": 1800,\n  \"items\": [\n    {\n      \"id_producto\": \"{{ _.producto_id }}\",\n      \"cantidad\": 1,\n      \"precio_unitario\": 1800,\n      \"monto_descuento\": 0,\n      \"subtotal\": 1800,\n      \"tipo_precio\": \"MINORISTA\"\n    }\n  ],\n  \"pagos\": [\n    {\n      \"id_metodo_pago\": \"550e8400-e29b-41d4-a716-446655440096\",\n      \"monto\": 1800\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_venta_listar",
+      "_type": "request",
+      "parentId": "fld_08_ventas",
+      "name": "8.4 Listar Ventas por Sucursal y Turno",
+      "method": "GET",
+      "url": "{{ _.base_url }}/ventas?id_sucursal={{ _.sucursal_id }}&id_turno_caja={{ _.turno_id }}",
+      "headers": []
+    },
+    {
+      "_id": "fld_09_devoluciones",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "09 - Devoluciones y Notas de Crédito"
+    },
+    {
+      "_id": "req_devolucion_crear",
+      "_type": "request",
+      "parentId": "fld_09_devoluciones",
+      "name": "9.1 Emitir Nota de Crédito con Prorrateo Promocional (RF-09)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/devoluciones",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_venta\": \"{{ _.venta_id }}\",\n  \"id_turno_caja\": \"{{ _.turno_id }}\",\n  \"motivo\": \"Paquete pinchado devuelto por el cliente\",\n  \"reintegrar_a_stock\": false,\n  \"items_devueltos\": [\n    {\n      \"id_producto\": \"{{ _.producto_id }}\",\n      \"cantidad\": 1,\n      \"precio_unitario_momento\": 1800,\n      \"monto_descuento_aplicado\": 200\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_devolucion_por_venta",
+      "_type": "request",
+      "parentId": "fld_09_devoluciones",
+      "name": "9.2 Consultar Notas de Crédito Asociadas a una Venta",
+      "method": "GET",
+      "url": "{{ _.base_url }}/devoluciones/venta/{{ _.venta_id }}",
+      "headers": []
+    },
+    {
+      "_id": "fld_10_inventario_avanzado",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "10 - Inventario Avanzado (2PC y Reconciliación)"
+    },
+    {
+      "_id": "req_huerfanos_listar",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.1 Listar Ventas Huérfanas / Artículos Comodín",
+      "method": "GET",
+      "url": "{{ _.base_url }}/inventario/huerfanos?id_sucursal={{ _.sucursal_id }}",
+      "headers": []
+    },
+    {
+      "_id": "req_huerfano_reconciliar",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.2 Reconciliar Código Huérfano creando Producto (RF-13 / C-18)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/inventario/reconciliar",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"codigo_comodin\": \"7798889990001\",\n  \"accion\": \"CREAR_NUEVO\",\n  \"nombre_oficial\": \"Yerba Mate Playadito 500g\",\n  \"id_categoria\": \"{{ _.categoria_id }}\",\n  \"precio_minorista\": 2100,\n  \"stock_fisico_actual\": 14\n}"
+      }
+    },
+    {
+      "_id": "req_cuarentena_crear",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.3 Reportar Alerta de Cuarentena de Stock",
+      "method": "POST",
+      "url": "{{ _.base_url }}/inventario/cuarentena",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal\": \"{{ _.sucursal_id }}\",\n  \"id_producto\": \"{{ _.producto_id }}\",\n  \"cantidad_faltante\": 3,\n  \"observacion\": \"Faltante detectado en góndola durante armado de pedido\"\n}"
+      }
+    },
+    {
+      "_id": "req_cuarentena_resolver",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.4 Resolver Cuarentena No Destructiva (C-23: Merma)",
+      "method": "PATCH",
+      "url": "{{ _.base_url }}/inventario/cuarentena/resolver",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_alerta\": \"{{ _.alerta_id }}\",\n  \"estado_resolucion\": \"MERMA_CONFIRMADA\",\n  \"observacion\": \"Merma confirmada: cajas rotas descartadas\"\n}"
+      }
+    },
+    {
+      "_id": "req_transferencia_crear",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.5 Iniciar Transferencia Inter-Sucursal (2PC)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/inventario/transferencias",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"id_sucursal_origen\": \"{{ _.sucursal_id }}\",\n  \"id_sucursal_destino\": \"{{ _.sucursal_destino_id }}\",\n  \"detalles\": [\n    {\n      \"id_producto\": \"{{ _.producto_id }}\",\n      \"cantidad_enviada\": 10\n    }\n  ]\n}"
+      }
+    },
+    {
+      "_id": "req_transferencia_despachar",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.6 Fase 1 2PC: Despachar y Deducir en Origen",
+      "method": "POST",
+      "url": "{{ _.base_url }}/inventario/transferencias/{{ _.transferencia_id }}/despachar",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"expected_version\": 1\n}"
+      }
+    },
+    {
+      "_id": "req_transferencia_recibir",
+      "_type": "request",
+      "parentId": "fld_10_inventario_avanzado",
+      "name": "10.7 Fase 2 2PC: Recepción y Conteo Físico en Destino",
+      "method": "POST",
+      "url": "{{ _.base_url }}/inventario/transferencias/{{ _.transferencia_id }}/recibir",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.default_user_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"expected_version\": 2,\n  \"detalles_recibidos\": [\n    {\n      \"id_producto\": \"{{ _.producto_id }}\",\n      \"cantidad_recibida\": 9,\n      \"estado_item\": \"FALTANTE\"\n    }\n  ],\n  \"motivo_discrepancia\": \"Llegaron 9 paquetes, 1 roto en traslado\"\n}"
+      }
+    },
+    {
+      "_id": "fld_11_sync",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "11 - Sincronización Local-First (RF-18 / O-25)"
+    },
+    {
+      "_id": "req_sync_push",
+      "_type": "request",
+      "parentId": "fld_11_sync",
+      "name": "11.1 Subir Lote de Deltas Offline (Push)",
+      "method": "POST",
+      "url": "{{ _.base_url }}/sync/push",
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "x-user-id", "value": "{{ _.system_bot_id }}" }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"sucursal_id\": \"{{ _.sucursal_id }}\",\n  \"last_pulled_at\": \"2026-10-23T12:00:00.000Z\",\n  \"nodo_destino\": \"CLOUD_CENTRAL\",\n  \"changes\": {\n    \"ventas\": {\n      \"created\": [\n        {\n          \"id\": \"550e8400-e29b-41d4-a716-446655440991\",\n          \"numero_comprobante\": \"B-0001-00000088\",\n          \"id_turno_caja\": \"{{ _.turno_id }}\",\n          \"estado_general\": \"CONFIRMADA\",\n          \"estado_logistico\": \"ENTREGADO\",\n          \"estado_financiero\": \"PAGADO\",\n          \"subtotal\": 1800,\n          \"descuento_total\": 0,\n          \"total\": 1800\n        }\n      ]\n    }\n  }\n}"
+      }
+    },
+    {
+      "_id": "req_sync_pull",
+      "_type": "request",
+      "parentId": "fld_11_sync",
+      "name": "11.2 Descargar Novedades por Cursor (Pull Catch-Up)",
+      "method": "GET",
+      "url": "{{ _.base_url }}/sync/pull?sucursal_id={{ _.sucursal_id }}&last_pulled_at=2026-10-23T00:00:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "fld_12_auditoria",
+      "_type": "request_group",
+      "parentId": "wrk_poslyon_cloud",
+      "name": "12 - Auditoría Forense y Trazabilidad (RF-19)"
+    },
+    {
+      "_id": "req_auditoria_listar",
+      "_type": "request",
+      "parentId": "fld_12_auditoria",
+      "name": "12.1 Consultar Registros Forenses de Auditoría",
+      "method": "GET",
+      "url": "{{ _.base_url }}/auditoria",
+      "headers": []
+    }
+  ]
+}
