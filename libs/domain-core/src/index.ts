@@ -62,3 +62,34 @@ export * from './interfaces/sync-cursor.interface';
 export * from './interfaces/evento-websocket.interface';
 export * from './interfaces/conflicto-occ.interface';
 export * from './interfaces/sync-strategy.interface';
+
+// Validadores Declarativos Customizados (Resolución S-03)
+export * from './validators/is-uuid-or-nil.decorator';
+
+// DTOs con Validaciones Declarativas (Módulos 1 al 5)
+export * from './dtos/crear-venta.dto';
+export * from './dtos/aplicar-promocion.dto';
+export * from './dtos/item-devolucion.dto';
+export * from './dtos/crear-devolucion.dto';
+export * from './dtos/registrar-abono.dto';
+export * from './dtos/sync-cuenta-corriente-delta.dto';
+export * from './dtos/reconciliar-codigo-huerfano.dto';
+export * from './dtos/resolver-cuarentena.dto';
+export * from './dtos/ajustar-stock-manual.dto';
+export * from './dtos/vincular-diccionario.dto';
+export * from './dtos/crear-recepcion.dto';
+export * from './dtos/agregar-renglon-recepcion.dto';
+export * from './dtos/confirmar-recepcion.dto';
+export * from './dtos/sync-push.dto';
+export * from './dtos/sync-pull-query.dto';
+export * from './dtos/registrar-auditoria.dto';
+
+// Reglas Puras y Guardas de Dominio (C-10, C-11, C-12, O-26, RF-07, RF-08)
+export * from './rules/validar-margen-credito.rule';
+export * from './rules/guardas-venta-y-stock.rule';
+
+// Servicios Puros de Dominio (RF-09, RF-10, RF-13, RF-15, RF-17, S-08, S-09, S-10, C-18, C-21, C-23, O-23, O-27)
+export * from './services/margen-precios.domain-service';
+export * from './services/devoluciones.domain-service';
+export * from './services/reconciliacion.domain-service';
+export * from './services/reloj-y-arqueo.domain-service';
