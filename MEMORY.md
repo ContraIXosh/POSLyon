@@ -16,6 +16,9 @@
   - **Sub-módulo 4.4:** **Sincronización Local-First, Cursores Temporales y Resolución de Conflictos** (`SYNC_CURSOR`, estrictez temporal ISO-8601 UTC con milisegundos O-25 para cursores `last_pulled_at` y `last_pushed_at`, subida push de deltas offline, Merge Aditivo C-10 en cuentas corrientes ante sobregiros concurrentes con alerta `EXCESO_LIMITE_CREDITO_POST_SYNC` y flag `requiere_revision`, deducción permisiva de existencias C-12 con `VENTA_OFFLINE_STOCK_NEGATIVO`, idempotencia unificada UUID O-22, identidad de sistema `UUID_SYSTEM_BOT` S-03 y catch-up pull incremental de catálogo y configuraciones). *(Trazabilidad: `17-sincronizacion-local-first-y-cursores.md`)*.
 - **Suite Automatizada de Pruebas Monorepo:** **`14 Test Suites Passed`, `123 Tests Passed`** (`100%` en verde en Jest + Supertest).
 - **Compilación TypeScript:** Clean Build (`npm run build`, exit code 0) en `@poslyon/domain-core` y `@poslyon/backend-cloud`.
+- **Colección de Insomnia y Guía de Pruebas:**
+  - Colección exportada lista para importar en 1-click: [`docs/insomnia/POSLyon_Insomnia_Collection.json`](file:///d:/Contr/Archivos/POSLyon-Monolitico/docs/insomnia/POSLyon_Insomnia_Collection.json).
+  - Guía didáctica paso a paso (de 0 a 100): [`docs/GUIA_PRUEBAS_INSOMNIA.md`](file:///d:/Contr/Archivos/POSLyon-Monolitico/docs/GUIA_PRUEBAS_INSOMNIA.md).
 - **Documentos de Trazabilidad Generados (`docs/trazabilidad/`):**
   1. [`docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md`](file:///d:/Contr/Archivos/POSLyon-Monolitico/docs/trazabilidad/01-monorepo-y-nucleo-estados-pos.md) *(Anti-Patrón Novato vs. Ingeniería Profesional, RFC 4122 Nil UUID, Harel Statecharts y Type Erasure)*.
   2. [`docs/trazabilidad/02-enums-dominio-modulos.md`](file:///d:/Contr/Archivos/POSLyon-Monolitico/docs/trazabilidad/02-enums-dominio-modulos.md) *(Signed Ledger, Cierre Ciego vs. Rectificación Forense, Two-Phase Commit 2PC, Strategy Pattern y Packs)*.
